@@ -1,15 +1,24 @@
+#!/usr/bin/env python3
 """
 LocalFlow - A local workflow executor inspired by GitHub Actions.
 This tool allows running workflows defined in YAML locally or in Docker containers.
+
+Key features:
+- YAML-based workflow definitions
+- Local and Docker execution support
+- Job-level granular execution
+- Rich console output and logging
+- Flexible configuration management
 """
 
 import logging
 import os
 import sys
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 
 import click
 import docker
@@ -19,6 +28,7 @@ from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.panel import Panel
+from rich.markup import escape
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -160,7 +170,15 @@ class WorkflowExecutor:
         """Load and validate workflow file."""
         try:
             with open(self.workflow_path) as f:
-                return yaml.safe_load(f)
+                workflow_data = yaml.safe_load(f)
+
+                # Basic validation
+                if not isinstance(workflow_data, dict):
+                    raise ValueError("Workflow must be a YAML dictionary")
+                if 'jobs' not in workflow_data:
+                    raise ValueError("Workflow must contain a 'jobs' section")
+
+                return workflow_data
         except Exception as e:
             raise ValueError(f"Failed to load workflow file: {e}")
 
@@ -232,6 +250,36 @@ class WorkflowExecutor:
 
         return True
 
+    def run_job(self, job_name: str) -> bool:
+        """Execute a specific job from the workflow."""
+        try:
+            workflow = self.load_workflow()
+            workflow_env = workflow.get('env', {})
+
+            # Check if job exists
+            if job_name not in workflow.get('jobs', {}):
+                raise ValueError(
+                    f"Job '{job_name}' not found in workflow. "
+                    f"Use 'localflow jobs {self.workflow_path.name}' to list available jobs."
+                )
+
+            # Get job data
+            job_data = workflow['jobs'][job_name]
+
+            # Check job dependencies
+            needs = job_data.get('needs', [])
+            if needs:
+                self.logger.warning(
+                    f"Running job '{job_name}' without its dependencies: {', '.join(needs)}"
+                )
+
+            # Execute the job
+            return self.execute_job(job_name, job_data, workflow_env)
+
+        except Exception as e:
+            self.logger.error(f"Job execution failed: {e}")
+            return False
+
     def run(self) -> bool:
         """Execute the entire workflow."""
         try:
@@ -247,6 +295,31 @@ class WorkflowExecutor:
         except Exception as e:
             self.logger.error(f"Workflow execution failed: {e}")
             return False
+
+def resolve_workflow_path(workflows_dir: Path, workflow_name: str) -> Path:
+    """
+    Resolve workflow path from name, supporting both direct paths and names from workflows directory.
+    Also handles both .yml and .yaml extensions.
+    """
+    # First, check if it's a direct path
+    direct_path = Path(workflow_name)
+    if direct_path.exists():
+        return direct_path.resolve()
+
+    # Remove any extension from the workflow name
+    base_name = Path(workflow_name).stem
+
+    # Check both extensions in the workflows directory
+    for ext in ['.yml', '.yaml']:
+        workflow_path = workflows_dir / f"{base_name}{ext}"
+        if workflow_path.exists():
+            return workflow_path.resolve()
+
+    # If we get here, the workflow wasn't found
+    raise FileNotFoundError(
+        f"Workflow '{workflow_name}' not found in {workflows_dir}. "
+        f"Available workflows can be listed using 'localflow list'"
+    )
 
 def resolve_config_path(config_path: Optional[str]) -> Optional[Path]:
     """Resolve configuration file path with environment variable support."""
@@ -291,16 +364,19 @@ def cli(ctx, config, debug, quiet):
         sys.exit(1)
 
 @cli.command()
-@click.argument('workflow', type=click.Path(exists=True))
+@click.argument('workflow')
+@click.option('--job', '-j', help='Specific job to run')
 @click.option('--docker/--no-docker', help='Override Docker setting')
 @click.pass_obj
-def run(config: Config, workflow: str, docker: bool):
-    """Run a workflow file"""
-    if docker is not None:
-        config.docker_enabled = docker
-
+def run(config: Config, workflow: str, job: str, docker: bool):
+    """Run a workflow file or a specific job within it"""
     try:
-        workflow_path = config.workflows_dir.glob(f'{workflow}')
+        # Resolve the workflow path
+        workflow_path = resolve_workflow_path(config.workflows_dir, workflow)
+
+        if docker is not None:
+            config.docker_enabled = docker
+
         executor = WorkflowExecutor(workflow_path, config)
 
         with Progress(
@@ -308,15 +384,30 @@ def run(config: Config, workflow: str, docker: bool):
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
-            task = progress.add_task(f"Running workflow: {workflow_path.name}")
-            success = executor.run()
+            task_desc = f"Running job '{job}' from" if job else "Running"
+            task = progress.add_task(
+                f"{task_desc} workflow: {workflow_path.name}"
+            )
+
+            if job:
+                # Run specific job
+                success = executor.run_job(job)
+            else:
+                # Run entire workflow
+                success = executor.run()
+
             progress.update(task, completed=True)
 
         if not success:
             sys.exit(1)
 
+    except FileNotFoundError as e:
+        console.print(f"[red]{str(e)}[/red]")
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error running workflow: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
         sys.exit(1)
 
 @cli.command()
@@ -341,10 +432,16 @@ def list(config: Config):
             console.print(Panel("""
 No workflows found. To get started, create a workflow file like this:
 
-[blue]example-workflow.yaml:[/blue]
+[blue]example-workflow.yml:[/blue]
 name: Example Workflow
+description: A simple example workflow
+version: 1.0.0
+author: Your Name
+
 jobs:
   hello:
+    name: Hello World
+    description: A simple greeting job
     steps:
       - name: Say Hello
         run: echo "Hello, LocalFlow!"
@@ -366,19 +463,30 @@ jobs:
         table.add_column("Last Modified", justify="left")
         table.add_column("Size", justify="right")
 
-        for workflow in workflow_paths:
-            with open(workflow, 'r') as file:
-                wf = yaml.safe_load(file)
+        for workflow_path in workflow_paths:
+            try:
+                with open(workflow_path, 'r') as file:
+                    workflow_data = yaml.safe_load(file) or {}
 
-            stats = workflow.stat()
-            table.add_row(
-                workflow.name,
-                wf['description'],
-                wf['version'],
-                wf['author'],
-                datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                f"{stats.st_size / 1024:.1f} KB"
-            )
+                stats = workflow_path.stat()
+                table.add_row(
+                    workflow_path.name,
+                    workflow_data.get('description', 'No description'),
+                    workflow_data.get('version', 'N/A'),
+                    workflow_data.get('author', 'Unknown'),
+                    datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    f"{stats.st_size / 1024:.1f} KB"
+                )
+            except Exception as e:
+                # If there's an error reading a workflow, show it as invalid but don't crash
+                table.add_row(
+                    workflow_path.name,
+                    f"[red]Error: {str(e)}[/red]",
+                    "Invalid",
+                    "Invalid",
+                    datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    f"{stats.st_size / 1024:.1f} KB"
+                )
 
         console.print(table)
 
@@ -388,10 +496,99 @@ jobs:
             console.print_exception()
 
 @cli.command()
+@click.argument('workflow')
+@click.pass_obj
+def jobs(config: Config, workflow: str):
+    """List available jobs in a workflow"""
+    try:
+        # Resolve the workflow path
+        workflow_path = resolve_workflow_path(config.workflows_dir, workflow)
+
+        # Load and parse the workflow
+        with open(workflow_path) as f:
+            workflow_data = yaml.safe_load(f)
+
+        if not workflow_data or 'jobs' not in workflow_data:
+            console.print(f"[red]No jobs found in workflow: {workflow_path.name}[/red]")
+            return
+
+        # Create the jobs table
+        table = Table(
+            title=f"Jobs in {workflow_path.name}",
+            show_header=True,
+            header_style="bold blue",
+            border_style="blue"
+        )
+
+        table.add_column("Job Name", justify="left", no_wrap=True)
+        table.add_column("Description", justify="left")
+        table.add_column("Steps", justify="center")
+        table.add_column("Dependencies", justify="left")
+        table.add_column("Environment", justify="left")
+
+        # Add job information to the table
+        for job_name, job_data in workflow_data['jobs'].items():
+            # Count steps
+            steps = job_data.get('steps', [])
+            steps_count = len(steps)
+
+            # Get dependencies
+            needs = job_data.get('needs', [])
+            needs_str = ', '.join(needs) if needs else 'None'
+
+            # Get environment variables
+            env = job_data.get('env', {})
+            env_str = ', '.join(f'{k}={v}' for k, v in env.items()) if env else 'None'
+
+            # Get job description (support both direct description and name fields)
+            description = job_data.get('description', job_data.get('name', 'No description'))
+
+            table.add_row(
+                job_name,
+                description,
+                str(steps_count),
+                needs_str,
+                env_str
+            )
+
+        console.print("\n")  # Add some spacing
+
+        # Print workflow metadata
+        metadata_panel = Panel(
+            f"""
+[bold]Workflow:[/bold] {workflow_data.get('name', workflow_path.name)}
+[bold]Description:[/bold] {workflow_data.get('description', 'No description')}
+[bold]Version:[/bold] {workflow_data.get('version', 'N/A')}
+[bold]Author:[/bold] {workflow_data.get('author', 'Unknown')}
+            """.strip(),
+            title="Workflow Information",
+            border_style="blue"
+        )
+        console.print(metadata_panel)
+        console.print("\n")  # Add some spacing
+
+        # Print the jobs table
+        console.print(table)
+
+        # Print usage hint
+        console.print("\n[dim]To run a specific job, use:[/dim]")
+        console.print(f"[dim]  localflow run {workflow_path.name} --job <job_name>[/dim]")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]{str(e)}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error listing jobs: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+        sys.exit(1)
+
+@cli.command()
 @click.pass_obj
 def config(config: Config):
     """Show current configuration"""
     try:
+        # Create the configuration table
         table = Table(
             title="Current Configuration",
             show_header=True,
@@ -401,14 +598,42 @@ def config(config: Config):
 
         table.add_column("Setting", style="bold")
         table.add_column("Value")
+        table.add_column("Description")
+
+        # Configuration descriptions for better understanding
+        descriptions = {
+            'workflows_dir': 'Directory containing workflow files',
+            'log_dir': 'Directory for log files',
+            'log_level': 'Logging verbosity level',
+            'docker_enabled': 'Whether Docker execution is enabled',
+            'docker_default_image': 'Default Docker image for containerized steps',
+            'show_output': 'Whether to show command output in console',
+            'default_shell': 'Default shell for executing commands'
+        }
 
         for key, value in asdict(config).items():
-            table.add_row(str(key), str(value))
+            table.add_row(
+                str(key),
+                str(value),
+                descriptions.get(key, 'No description available')
+            )
 
+        # Print configuration source
+        config_source = os.environ.get('LOCALFLOW_CONFIG', 'Using default configuration')
+        console.print(f"\n[dim]Configuration source: {config_source}[/dim]\n")
+
+        # Print the configuration table
         console.print(table)
+
+        # Print help text for modifying configuration
+        console.print("\n[dim]To use a different configuration file:[/dim]")
+        console.print("[dim]  1. Set LOCALFLOW_CONFIG environment variable[/dim]")
+        console.print("[dim]  2. Use --config option: localflow --config path/to/config.yaml <command>[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error displaying configuration: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
 
 if __name__ == '__main__':
     cli()
