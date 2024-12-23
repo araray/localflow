@@ -15,10 +15,11 @@ import logging
 import os
 import sys
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, Optional, TextIO, Any
 
 import click
 import docker
@@ -28,10 +29,46 @@ from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.panel import Panel
-from rich.markup import escape
+
 
 # Initialize Rich console for beautiful output
 console = Console()
+
+class OutputMode(str, Enum):
+    """Output modes for workflow execution"""
+    STDOUT = "stdout"    # Output only to stdout
+    FILE = "file"       # Output only to file
+    BOTH = "both"       # Output to both stdout and file
+
+@dataclass
+class OutputConfig:
+    """Configuration for workflow output handling"""
+    file: Optional[Path] = None
+    mode: OutputMode = OutputMode.STDOUT
+    stdout: bool = True
+    append: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'OutputConfig':
+        """Create OutputConfig from dictionary (usually from YAML)"""
+        if not data:
+            return cls()
+
+        return cls(
+            file=Path(os.path.expanduser(data.get('file', ''))).resolve() if data.get('file') else None,
+            mode=OutputMode(data.get('mode', 'stdout')),
+            stdout=data.get('stdout', True),
+            append=data.get('append', False)
+        )
+
+    def merge_with_cli(self, output_file: Optional[str], output_mode: str, append: bool) -> 'OutputConfig':
+        """Merge this config with CLI options, giving precedence to CLI"""
+        return OutputConfig(
+            file=Path(output_file).resolve() if output_file else self.file,
+            mode=OutputMode(output_mode) if output_mode else self.mode,
+            stdout=self.stdout,
+            append=append if append is not None else self.append
+        )
 
 @dataclass
 class Config:
@@ -43,6 +80,7 @@ class Config:
     docker_default_image: str
     show_output: bool
     default_shell: str
+    output_config: OutputConfig = field(default_factory=OutputConfig)
 
     @classmethod
     def load_from_file(cls, config_path: Optional[Path]) -> 'Config':
@@ -64,7 +102,8 @@ class Config:
                 docker_enabled=config_data.get('docker_enabled', False),
                 docker_default_image=config_data.get('docker_default_image', 'ubuntu:latest'),
                 show_output=config_data.get('show_output', True),
-                default_shell=config_data.get('default_shell', '/bin/bash')
+                default_shell=config_data.get('default_shell', '/bin/bash'),
+                output_config=OutputConfig.from_dict(config_data.get('output', {}))
             )
         except Exception as e:
             console.print(f"[red]Error loading configuration: {e}[/red]")
@@ -158,21 +197,57 @@ class DockerExecutor:
                 'output': f"Docker execution failed: {str(e)}"
             }
 
+class OutputHandler:
+    """Handles workflow output routing"""
+    def __init__(self, config: OutputConfig):
+        self.config = config
+        self._file_handle: Optional[TextIO] = None
+
+    def __enter__(self):
+        """Set up output handling on context enter"""
+        if self.config.file and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
+            # Ensure parent directory exists
+            self.config.file.parent.mkdir(parents=True, exist_ok=True)
+            mode = 'a' if self.config.append else 'w'
+            self._file_handle = open(self.config.file, mode)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Clean up on context exit"""
+        if self._file_handle:
+            self._file_handle.close()
+
+    def write(self, content: str):
+        """Write content according to configuration"""
+        # Write to stdout if configured
+        if self.config.stdout and self.config.mode in (OutputMode.STDOUT, OutputMode.BOTH):
+            sys.stdout.write(content)
+            sys.stdout.flush()
+
+        # Write to file if configured
+        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
+            self._file_handle.write(content)
+            self._file_handle.flush()
+
 class WorkflowExecutor:
-    """Execute workflow files with enhanced logging and Docker support."""
+    """Execute workflow files with enhanced output handling"""
     def __init__(self, workflow_path: Path, config: Config):
         self.workflow_path = workflow_path
         self.config = config
         self.logger = LocalFlowLogger(config, workflow_path.stem).logger
         self.docker_executor = DockerExecutor(config) if config.docker_enabled else None
+        self.workflow_data = self.load_workflow()
+
+        # Merge workflow-level output config with global config
+        workflow_output = OutputConfig.from_dict(self.workflow_data.get('output', {}))
+        self.output_config = workflow_output or config.output_config
 
     def load_workflow(self) -> Dict[str, Any]:
-        """Load and validate workflow file."""
+        """Load and validate workflow file"""
         try:
             with open(self.workflow_path) as f:
                 workflow_data = yaml.safe_load(f)
 
-                # Basic validation
                 if not isinstance(workflow_data, dict):
                     raise ValueError("Workflow must be a YAML dictionary")
                 if 'jobs' not in workflow_data:
@@ -183,7 +258,7 @@ class WorkflowExecutor:
             raise ValueError(f"Failed to load workflow file: {e}")
 
     def execute_step(self, step: dict, env: Dict[str, str] = None) -> bool:
-        """Execute a single workflow step with enhanced logging and Docker support."""
+        """Execute a single workflow step with output handling"""
         step_name = step.get('name', 'Unnamed step')
         command = step.get('run')
         working_dir = step.get('working-directory', str(self.workflow_path.parent))
@@ -193,105 +268,87 @@ class WorkflowExecutor:
             return False
 
         self.logger.info(f"Executing step: {step_name}")
-        self.logger.debug(f"Command: {command}")
-        self.logger.debug(f"Working directory: {working_dir}")
-
-        # Prepare environment
-        full_env = os.environ.copy()
-        if env:
-            full_env.update(env)
-        if step.get('env'):
-            full_env.update(step['env'])
 
         try:
-            if self.config.docker_enabled and not step.get('local', False):
-                result = self.docker_executor.run_in_container(command, full_env, working_dir)
-            else:
-                # Local execution
-                process = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=working_dir,
-                    env=full_env,
-                    text=True,
-                    capture_output=True
-                )
-                result = {
-                    'exit_code': process.returncode,
-                    'output': process.stdout + process.stderr
-                }
+            with OutputHandler(self.output_config) as output:
+                if self.config.docker_enabled and not step.get('local', False):
+                    result = self.docker_executor.run_in_container(command, env, working_dir)
+                else:
+                    process = subprocess.run(
+                        command,
+                        shell=True,
+                        cwd=working_dir,
+                        env=env or os.environ.copy(),
+                        text=True,
+                        capture_output=True
+                    )
+                    result = {
+                        'exit_code': process.returncode,
+                        'output': process.stdout + process.stderr
+                    }
 
-            if result['output']:
-                if self.config.show_output:
-                    console.print(result['output'])
-                self.logger.debug(f"Output: {result['output']}")
+                if result['output']:
+                    output.write(result['output'])
+                    if not result['output'].endswith('\n'):
+                        output.write('\n')  # Ensure output ends with newline
+                    self.logger.debug(f"Output: {result['output']}")
 
-            success = result['exit_code'] == 0
-            if not success:
-                self.logger.error(f"Step '{step_name}' failed with exit code {result['exit_code']}")
-            return success
+                success = result['exit_code'] == 0
+                if not success:
+                    error_msg = f"Step '{step_name}' failed with exit code {result['exit_code']}\n"
+                    output.write(error_msg)
+                    self.logger.error(error_msg.strip())
+                return success
 
         except Exception as e:
-            self.logger.error(f"Failed to execute step '{step_name}': {e}")
+            error_msg = f"Failed to execute step '{step_name}': {e}\n"
+            self.logger.error(error_msg.strip())
+            with OutputHandler(self.output_config) as output:
+                output.write(error_msg)
             return False
 
-    def execute_job(self, job_name: str, job_data: dict, workflow_env: Dict[str, str]) -> bool:
-        """Execute all steps in a job."""
+    def execute_job(self, job_name: str, job_data: dict) -> bool:
+        """Execute all steps in a job"""
         self.logger.info(f"Starting job: {job_name}")
 
-        # Prepare job environment
-        job_env = workflow_env.copy()
-        if job_data.get('env'):
-            job_env.update(job_data['env'])
+        # Get job-level environment variables
+        env = os.environ.copy()
+        if 'env' in self.workflow_data:
+            env.update(self.workflow_data['env'])
+        if 'env' in job_data:
+            env.update(job_data['env'])
 
         for step in job_data.get('steps', []):
-            if not self.execute_step(step, job_env):
+            if not self.execute_step(step, env):
                 return False
 
         return True
 
     def run_job(self, job_name: str) -> bool:
-        """Execute a specific job from the workflow."""
+        """Execute a specific job from the workflow"""
         try:
-            workflow = self.load_workflow()
-            workflow_env = workflow.get('env', {})
-
             # Check if job exists
-            if job_name not in workflow.get('jobs', {}):
+            if job_name not in self.workflow_data.get('jobs', {}):
                 raise ValueError(
                     f"Job '{job_name}' not found in workflow. "
-                    f"Use 'localflow jobs {self.workflow_path.name}' to list available jobs."
+                    f"Available jobs: {', '.join(self.workflow_data['jobs'].keys())}"
                 )
 
-            # Get job data
-            job_data = workflow['jobs'][job_name]
-
-            # Check job dependencies
-            needs = job_data.get('needs', [])
-            if needs:
-                self.logger.warning(
-                    f"Running job '{job_name}' without its dependencies: {', '.join(needs)}"
-                )
-
-            # Execute the job
-            return self.execute_job(job_name, job_data, workflow_env)
+            # Get job data and execute
+            job_data = self.workflow_data['jobs'][job_name]
+            return self.execute_job(job_name, job_data)
 
         except Exception as e:
             self.logger.error(f"Job execution failed: {e}")
             return False
 
     def run(self) -> bool:
-        """Execute the entire workflow."""
+        """Execute the entire workflow"""
         try:
-            workflow = self.load_workflow()
-            workflow_env = workflow.get('env', {})
-
-            for job_name, job_data in workflow.get('jobs', {}).items():
-                if not self.execute_job(job_name, job_data, workflow_env):
+            for job_name, job_data in self.workflow_data.get('jobs', {}).items():
+                if not self.execute_job(job_name, job_data):
                     return False
-
             return True
-
         except Exception as e:
             self.logger.error(f"Workflow execution failed: {e}")
             return False
@@ -364,20 +421,31 @@ def cli(ctx, config, debug, quiet):
         sys.exit(1)
 
 @cli.command()
+@click.pass_obj
 @click.argument('workflow')
 @click.option('--job', '-j', help='Specific job to run')
 @click.option('--docker/--no-docker', help='Override Docker setting')
-@click.pass_obj
-def run(config: Config, workflow: str, job: str, docker: bool):
-    """Run a workflow file or a specific job within it"""
+@click.option('--output', '-o', type=click.Path(), help='Output file path')
+@click.option('--output-mode',
+              type=click.Choice(['stdout', 'file', 'both']),
+              help='Output destination mode')
+@click.option('--append/--no-append', help='Append to output file instead of overwriting')
+def run(config: Config, workflow: str, job: str, docker: bool,
+        output: Optional[str], output_mode: str, append: bool):
+    """Run a workflow file or specific job with output handling"""
     try:
-        # Resolve the workflow path
         workflow_path = resolve_workflow_path(config.workflows_dir, workflow)
 
         if docker is not None:
             config.docker_enabled = docker
 
         executor = WorkflowExecutor(workflow_path, config)
+
+        # Merge CLI output options with workflow config
+        if output or output_mode or append:
+            executor.output_config = executor.output_config.merge_with_cli(
+                output, output_mode, append
+            )
 
         with Progress(
             SpinnerColumn(),
@@ -390,10 +458,8 @@ def run(config: Config, workflow: str, job: str, docker: bool):
             )
 
             if job:
-                # Run specific job
                 success = executor.run_job(job)
             else:
-                # Run entire workflow
                 success = executor.run()
 
             progress.update(task, completed=True)
@@ -401,9 +467,6 @@ def run(config: Config, workflow: str, job: str, docker: bool):
         if not success:
             sys.exit(1)
 
-    except FileNotFoundError as e:
-        console.print(f"[red]{str(e)}[/red]")
-        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error running workflow: {e}[/red]")
         if config.log_level == "DEBUG":
