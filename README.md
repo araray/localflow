@@ -1,380 +1,158 @@
 # LocalFlow: Local Workflow Executor
 
-LocalFlow is a powerful, Unix-philosophy inspired workflow executor that brings GitHub Actions-like functionality to your local environment. It allows you to define workflows in YAML, execute them locally or in Docker containers, and manage them with a beautiful command-line interface.
+LocalFlow brings the power of GitHub Actions-like workflow automation to your local environment. It allows you to define workflows in YAML and execute them either locally or in Docker containers, making it perfect for development, testing, and local automation tasks.
 
-![LocalFlow Banner](docs/banner.png)
+## Key Features
 
-## Table of Contents
+LocalFlow combines the familiarity of GitHub Actions with the convenience of local execution:
 
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Creating Workflows](#creating-workflows)
-- [Command Line Interface](#command-line-interface)
-- [Docker Integration](#docker-integration)
-- [Advanced Usage](#advanced-usage)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-
-## Features
-
-LocalFlow brings the power of workflow automation to your local environment with:
-
-- **YAML-Based Workflows**: Define complex workflows using simple, human-readable YAML syntax
-- **Local or Docker Execution**: Run steps locally or in isolated Docker containers
-- **Rich Command-Line Interface**: Beautiful, informative output with progress indicators and color-coding
-- **Comprehensive Logging**: Detailed logs with configurable verbosity and output formats
-- **Flexible Configuration**: Easy configuration through YAML files and environment variables
-- **Unix Philosophy**: Each component does one thing well, making the tool composable and maintainable
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8 or higher
-- Docker (optional, for container-based execution)
-
-### Basic Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/localflow.git
-cd localflow
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Make the script executable
-chmod +x localflow.py
-
-# Create required directories
-mkdir -p ~/.localflow/{workflows,logs}
-
-# Copy default configuration
-cp config.example.yml ~/.localflow/config.yml
-
-# Add to your PATH (optional)
-ln -s $(pwd)/localflow.py ~/.local/bin/localflow
-```
+- Write workflows in simple, GitHub Actions-inspired YAML syntax
+- Run workflows locally or in isolated Docker containers
+- Execute entire workflows or specific jobs
+- Flexible output handling with file and console options
+- Rich, colorful command-line interface with progress tracking
+- Comprehensive logging system with debug capabilities
+- Environment variable management at multiple levels
+- Docker integration for isolated execution
 
 ## Quick Start
 
-Let's create and run a simple workflow:
+Getting started with LocalFlow is straightforward:
 
 ```bash
-# Create a workflow file
+# Install LocalFlow
+git clone https://github.com/yourusername/localflow.git
+cd localflow
+./install.py
+
+# Create your first workflow
 cat > ~/.localflow/workflows/hello.yml << EOL
-name: Hello World Workflow
+name: Hello World
+description: A simple example workflow
+version: 1.0.0
+author: Your Name
 
 jobs:
   greet:
     steps:
       - name: Say Hello
-        run: echo "Hello, LocalFlow!"
-      
-      - name: Show Date
-        run: date
+        run: echo "Hello from LocalFlow!"
 EOL
 
 # Run the workflow
-localflow run ~/.localflow/workflows/hello.yml
+localflow run hello.yml
+```
+
+## Installation
+
+LocalFlow requires Python 3.8 or higher and optionally Docker for container-based execution.
+
+### Using the Installation Script
+
+The recommended way to install LocalFlow is using the provided installation script:
+
+```bash
+./install.py
+```
+
+The script will:
+1. Check prerequisites
+2. Create necessary directories
+3. Install Python dependencies
+4. Configure your shell environment
+5. Create an example workflow
+6. Set up initial configuration
+
+### Manual Installation
+
+If you prefer manual installation:
+
+```bash
+# Create required directories
+mkdir -p ~/.localflow/{workflows,logs}
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Create symbolic link
+ln -s $(pwd)/localflow.py ~/.local/bin/localflow
+
+# Copy and edit configuration
+cp config.example.yml ~/.localflow/config.yml
 ```
 
 ## Configuration
 
-LocalFlow can be configured through a YAML configuration file. By default, it looks for `~/.localflow/config.yml`, but you can specify a different location using the `LOCALFLOW_CONFIG` environment variable.
+LocalFlow can be configured through:
+- Configuration file (`~/.localflow/config.yaml`)
+- Environment variables
+- Command-line options
 
-### Sample Configuration
-
+Example configuration:
 ```yaml
-# Directory Settings
 workflows_dir: "~/.localflow/workflows"
 log_dir: "~/.localflow/logs"
-
-# Logging Configuration
-log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-show_output: true  # Whether to show command output in console
-
-# Docker Configuration
+log_level: "INFO"
 docker_enabled: false
 docker_default_image: "ubuntu:latest"
-
-# Shell Configuration
+show_output: true
 default_shell: "/bin/bash"
 ```
 
-### Environment Variables
+## Basic Usage
 
-- `LOCALFLOW_CONFIG`: Path to configuration file
-- `LOCALFLOW_DEBUG`: Enable debug mode when set to "1"
-- `LOCALFLOW_QUIET`: Suppress console output when set to "1"
-
-## Creating Workflows
-
-Workflows in LocalFlow are defined using YAML syntax. Here's a comprehensive guide to creating workflows:
-
-### Basic Structure
-
-```yaml
-name: My Workflow
-
-env:
-  GLOBAL_VAR: "value"
-
-jobs:
-  job_id:
-    name: Job Name
-    env:
-      JOB_VAR: "value"
-    steps:
-      - name: Step Name
-        run: command
-        env:
-          STEP_VAR: "value"
-```
-
-### Step Properties
-
-Each step can have the following properties:
-
-- `name`: Human-readable step name
-- `run`: Command to execute
-- `working-directory`: Directory where the command runs
-- `env`: Environment variables for this step
-- `if`: Condition for step execution
-- `local`: Force local execution even when Docker is enabled
-
-### Example: Complex Workflow
-
-```yaml
-name: Build and Test Python Project
-
-env:
-  PYTHONPATH: "src"
-
-jobs:
-  setup:
-    name: Setup Environment
-    steps:
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-        working-directory: ./src
-        
-      - name: Create Configuration
-        run: cp config.example.json config.json
-        env:
-          ENV: development
-
-  test:
-    name: Run Tests
-    needs: [setup]
-    steps:
-      - name: Unit Tests
-        run: python -m pytest tests/
-        working-directory: ./src
-        env:
-          TEST_MODE: true
-
-      - name: Integration Tests
-        run: python -m pytest integration_tests/
-        if: success()
-        env:
-          TEST_ENV: integration
-
-  build:
-    name: Build Package
-    needs: [test]
-    steps:
-      - name: Build Distribution
-        run: python setup.py sdist bdist_wheel
-        local: true  # Force local execution
-```
-
-### Multi-line Commands
-
-For complex commands, use YAML's block scalar syntax:
-
-```yaml
-steps:
-  - name: Complex Script
-    run: |
-      echo "Starting script..."
-      if [ -d "build" ]; then
-        rm -rf build
-      fi
-      mkdir build
-      cd build
-      cmake ..
-      make
-```
-
-### Environment Variables
-
-Environment variables cascade from workflow to job to step level:
-
-1. Global variables (workflow level)
-2. Job variables (override global)
-3. Step variables (override job and global)
-
-### Conditional Execution
-
-Use the `if` property for conditional execution:
-
-```yaml
-steps:
-  - name: Build
-    run: make build
-    if: success()  # Only run if previous steps succeeded
-
-  - name: Deploy
-    run: make deploy
-    if: env.DEPLOY == 'true'  # Check environment variable
-```
-
-## Command Line Interface
-
-LocalFlow provides a rich command-line interface with several commands:
-
-### Run Command
-
-Run a workflow:
+LocalFlow provides several commands for managing and executing workflows:
 
 ```bash
-# Basic usage
+# List available workflows
+localflow list
+
+# Show jobs in a workflow
+localflow jobs workflow.yml
+
+# Run entire workflow
 localflow run workflow.yml
 
-# Enable Docker execution
-localflow run --docker workflow.yml
+# Run specific job
+localflow run workflow.yml --job job_name
 
-# Debug mode
-localflow run --debug workflow.yml
+# Run with Docker
+localflow run workflow.yml --docker
 
-# Quiet mode (logs only)
-localflow run --quiet workflow.yml
-```
-
-### List Command
-
-List available workflows:
-
-```bash
-localflow list
-```
-
-### Config Command
-
-Show current configuration:
-
-```bash
+# Show configuration
 localflow config
 ```
 
-### Global Options
+See [USAGE.md](USAGE.md) for detailed usage instructions and advanced features.
 
-All commands support these options:
+## Directory Structure
 
-- `--config, -c`: Specify configuration file
-- `--debug/--no-debug`: Enable/disable debug mode
-- `--quiet/--no-quiet`: Enable/disable quiet mode
+After installation, LocalFlow creates the following structure:
 
-## Docker Integration
-
-LocalFlow can execute workflow steps in Docker containers for isolated, reproducible environments.
-
-### Enabling Docker
-
-Enable Docker execution in three ways:
-
-1. Configuration file:
-```yaml
-docker_enabled: true
-docker_default_image: "ubuntu:latest"
 ```
-
-2. Command line:
-```bash
-localflow run --docker workflow.yml
-```
-
-3. Per step:
-```yaml
-steps:
-  - name: Docker Step
-    run: echo "Running in Docker"
-    docker: true
-```
-
-### Docker Features
-
-- **Volume Mounting**: Working directory is automatically mounted
-- **Environment Variables**: All environment variables are passed to the container
-- **Image Selection**: Use default image or specify per step
-- **Network Access**: Containers have network access by default
-
-## Advanced Usage
-
-### Logging
-
-LocalFlow provides comprehensive logging:
-
-1. File Logging: All output is logged to `~/.localflow/logs/`
-2. Console Output: Rich, formatted output (unless quiet mode is enabled)
-3. Debug Information: Available with `--debug` flag
-
-### Error Handling
-
-LocalFlow handles errors gracefully:
-
-1. Step Failures: Logged with error messages and exit codes
-2. Workflow Failures: Complete error report with stack traces in debug mode
-3. Recovery: Failed workflows can be rerun from specific steps
-
-## Troubleshooting
-
-Common issues and solutions:
-
-### Permission Errors
-
-```bash
-# Fix directory permissions
-chmod -R u+rw ~/.localflow
-
-# Fix Docker permissions
-sudo usermod -aG docker $USER
-```
-
-### Docker Issues
-
-```bash
-# Check Docker service
-systemctl status docker
-
-# Test Docker access
-docker run hello-world
-```
-
-### Logging Issues
-
-```bash
-# Clear log directory
-rm -rf ~/.localflow/logs/*
-
-# Check log directory permissions
-ls -la ~/.localflow/logs
+~/.localflow/
+├── config.yaml       # Configuration file
+├── workflows/        # Workflow definitions
+└── logs/            # Execution logs
 ```
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on:
+We welcome contributions! Please see our contributing guidelines for details on:
+- Code style and standards
+- Testing requirements
+- Pull request process
+- Development setup
 
-- Code Style
-- Testing Requirements
-- Pull Request Process
-- Development Setup
+## Troubleshooting
+
+If you encounter issues:
+
+1. Enable debug mode: `localflow --debug ...`
+2. Check logs in `~/.localflow/logs/`
+3. Verify configuration: `localflow config`
+4. See [USAGE.md](USAGE.md) for troubleshooting guide
 
 ## License
 
-LocalFlow is released under the MIT License. See the [LICENSE](LICENSE) file for details.
+LocalFlow is released under the MIT License. See LICENSE file for details.
