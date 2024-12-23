@@ -300,7 +300,7 @@ def run(config: Config, workflow: str, docker: bool):
         config.docker_enabled = docker
 
     try:
-        workflow_path = Path(workflow).resolve()
+        workflow_path = config.workflows_dir.glob(f'{workflow}')
         executor = WorkflowExecutor(workflow_path, config)
 
         with Progress(
