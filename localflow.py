@@ -1,20 +1,24 @@
-#!/usr/bin/env python3
+"""
+LocalFlow - A local workflow executor inspired by GitHub Actions.
+This tool allows running workflows defined in YAML locally or in Docker containers.
+"""
+
+import logging
 import os
 import sys
-import yaml
-import json
-import logging
-import docker
-from pathlib import Path
-from typing import Dict, List, Optional, Union
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+
+import click
+import docker
+import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-from tabulate import tabulate
-import click
+from rich.panel import Panel
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -31,23 +35,30 @@ class Config:
     default_shell: str
 
     @classmethod
-    def load_from_file(cls, config_path: Path) -> 'Config':
-        """Load configuration from a YAML file."""
-        if not config_path.exists():
+    def load_from_file(cls, config_path: Optional[Path]) -> 'Config':
+        """Load configuration from a YAML file with proper error handling."""
+        try:
+            config_data = {}
+
+            if config_path and config_path.exists():
+                with open(config_path) as f:
+                    loaded_data = yaml.safe_load(f)
+                    if loaded_data:
+                        config_data = loaded_data
+
+            # Create configuration with proper path expansion
+            return cls(
+                workflows_dir=Path(os.path.expanduser(config_data.get('workflows_dir', '~/.localflow/workflows'))),
+                log_dir=Path(os.path.expanduser(config_data.get('log_dir', '~/.localflow/logs'))),
+                log_level=config_data.get('log_level', 'INFO'),
+                docker_enabled=config_data.get('docker_enabled', False),
+                docker_default_image=config_data.get('docker_default_image', 'ubuntu:latest'),
+                show_output=config_data.get('show_output', True),
+                default_shell=config_data.get('default_shell', '/bin/bash')
+            )
+        except Exception as e:
+            console.print(f"[red]Error loading configuration: {e}[/red]")
             return cls.get_defaults()
-
-        with open(config_path) as f:
-            config_data = yaml.safe_load(f)
-
-        return cls(
-            workflows_dir=Path(config_data.get('workflows_dir', '~/.localflow/workflows')).expanduser(),
-            log_dir=Path(config_data.get('log_dir', '~/.localflow/logs')).expanduser(),
-            log_level=config_data.get('log_level', 'INFO'),
-            docker_enabled=config_data.get('docker_enabled', False),
-            docker_default_image=config_data.get('docker_default_image', 'ubuntu:latest'),
-            show_output=config_data.get('show_output', True),
-            default_shell=config_data.get('default_shell', '/bin/bash')
-        )
 
     @classmethod
     def get_defaults(cls) -> 'Config':
@@ -62,8 +73,13 @@ class Config:
             default_shell='/bin/bash'
         )
 
+    def ensure_directories(self) -> None:
+        """Ensure required directories exist."""
+        self.workflows_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
 class LocalFlowLogger:
-    """Custom logger for LocalFlow."""
+    """Custom logger for LocalFlow with rich output support."""
     def __init__(self, config: Config, workflow_name: str):
         self.config = config
         self.workflow_name = workflow_name
@@ -81,6 +97,7 @@ class LocalFlowLogger:
         """Setup logger with both file and console handlers."""
         logger = logging.getLogger(f'LocalFlow.{self.workflow_name}')
         logger.setLevel(self.config.log_level)
+        logger.handlers = []  # Clear any existing handlers
 
         # File handler
         file_handler = logging.FileHandler(self.log_file)
@@ -103,7 +120,10 @@ class DockerExecutor:
         self.client = docker.from_env() if config.docker_enabled else None
 
     def run_in_container(self, command: str, env: Dict[str, str], working_dir: str) -> dict:
-        """Run a command in a Docker container."""
+        """Run a command in a Docker container with proper error handling."""
+        if not self.client:
+            return {'exit_code': 1, 'output': 'Docker is not enabled'}
+
         try:
             container = self.client.containers.run(
                 self.config.docker_default_image,
@@ -125,7 +145,7 @@ class DockerExecutor:
         except Exception as e:
             return {
                 'exit_code': 1,
-                'output': str(e)
+                'output': f"Docker execution failed: {str(e)}"
             }
 
 class WorkflowExecutor:
@@ -136,12 +156,24 @@ class WorkflowExecutor:
         self.logger = LocalFlowLogger(config, workflow_path.stem).logger
         self.docker_executor = DockerExecutor(config) if config.docker_enabled else None
 
+    def load_workflow(self) -> Dict[str, Any]:
+        """Load and validate workflow file."""
+        try:
+            with open(self.workflow_path) as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            raise ValueError(f"Failed to load workflow file: {e}")
+
     def execute_step(self, step: dict, env: Dict[str, str] = None) -> bool:
         """Execute a single workflow step with enhanced logging and Docker support."""
         step_name = step.get('name', 'Unnamed step')
         command = step.get('run')
-        working_dir = step.get('working-directory', os.path.dirname(self.workflow_path))
-        
+        working_dir = step.get('working-directory', str(self.workflow_path.parent))
+
+        if not command:
+            self.logger.error(f"Step '{step_name}' is missing required 'run' field")
+            return False
+
         self.logger.info(f"Executing step: {step_name}")
         self.logger.debug(f"Command: {command}")
         self.logger.debug(f"Working directory: {working_dir}")
@@ -158,7 +190,6 @@ class WorkflowExecutor:
                 result = self.docker_executor.run_in_container(command, full_env, working_dir)
             else:
                 # Local execution
-                import subprocess
                 process = subprocess.run(
                     command,
                     shell=True,
@@ -172,18 +203,59 @@ class WorkflowExecutor:
                     'output': process.stdout + process.stderr
                 }
 
-            # Log the results
-            self.logger.debug(f"Exit code: {result['exit_code']}")
             if result['output']:
                 if self.config.show_output:
                     console.print(result['output'])
                 self.logger.debug(f"Output: {result['output']}")
 
-            return result['exit_code'] == 0
+            success = result['exit_code'] == 0
+            if not success:
+                self.logger.error(f"Step '{step_name}' failed with exit code {result['exit_code']}")
+            return success
 
         except Exception as e:
             self.logger.error(f"Failed to execute step '{step_name}': {e}")
             return False
+
+    def execute_job(self, job_name: str, job_data: dict, workflow_env: Dict[str, str]) -> bool:
+        """Execute all steps in a job."""
+        self.logger.info(f"Starting job: {job_name}")
+
+        # Prepare job environment
+        job_env = workflow_env.copy()
+        if job_data.get('env'):
+            job_env.update(job_data['env'])
+
+        for step in job_data.get('steps', []):
+            if not self.execute_step(step, job_env):
+                return False
+
+        return True
+
+    def run(self) -> bool:
+        """Execute the entire workflow."""
+        try:
+            workflow = self.load_workflow()
+            workflow_env = workflow.get('env', {})
+
+            for job_name, job_data in workflow.get('jobs', {}).items():
+                if not self.execute_job(job_name, job_data, workflow_env):
+                    return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {e}")
+            return False
+
+def resolve_config_path(config_path: Optional[str]) -> Optional[Path]:
+    """Resolve configuration file path with environment variable support."""
+    if not config_path:
+        config_path = os.environ.get('LOCALFLOW_CONFIG')
+
+    if config_path:
+        return Path(os.path.expanduser(config_path)).resolve()
+    return None
 
 @click.group()
 @click.option('--config', '-c', type=click.Path(exists=True),
@@ -194,17 +266,29 @@ class WorkflowExecutor:
 @click.pass_context
 def cli(ctx, config, debug, quiet):
     """LocalFlow - A local workflow executor"""
-    # Load configuration
-    config_path = Path(config) if config else None
-    cfg = Config.load_from_file(config_path) if config_path else Config.get_defaults()
-    
-    # Override configuration based on CLI options
-    if debug:
-        cfg.log_level = 'DEBUG'
-    if quiet:
-        cfg.show_output = False
+    # Ensure we have a context object
+    ctx.ensure_object(dict)
 
-    ctx.obj = cfg
+    try:
+        # Resolve and load configuration
+        config_path = resolve_config_path(config)
+        cfg = Config.load_from_file(config_path)
+
+        # Override configuration based on CLI options
+        if debug:
+            cfg.log_level = 'DEBUG'
+        if quiet:
+            cfg.show_output = False
+
+        # Ensure required directories exist
+        cfg.ensure_directories()
+
+        # Store configuration in context
+        ctx.obj = cfg
+
+    except Exception as e:
+        console.print(f"[red]Error initializing LocalFlow: {e}[/red]")
+        sys.exit(1)
 
 @cli.command()
 @click.argument('workflow', type=click.Path(exists=True))
@@ -215,55 +299,116 @@ def run(config: Config, workflow: str, docker: bool):
     if docker is not None:
         config.docker_enabled = docker
 
-    workflow_path = Path(workflow)
-    executor = WorkflowExecutor(workflow_path, config)
-    
     try:
+        workflow_path = Path(workflow).resolve()
+        executor = WorkflowExecutor(workflow_path, config)
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
             task = progress.add_task(f"Running workflow: {workflow_path.name}")
-            executor.run()
+            success = executor.run()
             progress.update(task, completed=True)
+
+        if not success:
+            sys.exit(1)
+
     except Exception as e:
-        console.print(f"[red]Error running workflow:[/red] {e}")
+        console.print(f"[red]Error running workflow: {e}[/red]")
         sys.exit(1)
 
 @cli.command()
 @click.pass_obj
 def list(config: Config):
     """List available workflows"""
-    workflows = list(config.workflows_dir.glob('*.yml'))
-    
-    table = Table(title="Available Workflows")
-    table.add_column("Name")
-    table.add_column("Last Modified")
-    table.add_column("Size")
+    try:
+        # Ensure workflows directory exists
+        config.workflows_dir.mkdir(parents=True, exist_ok=True)
 
-    for workflow in workflows:
-        stats = workflow.stat()
-        table.add_row(
-            workflow.name,
-            datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-            f"{stats.st_size / 1024:.1f} KB"
+        # First, collect all workflow files with both extensions
+        yml_files = config.workflows_dir.glob('*.yml')
+        yaml_files = config.workflows_dir.glob('*.yaml')
+
+        # Convert paths to strings for sorting and combine them
+        workflow_paths = sorted(
+            [path for path in (*yml_files, *yaml_files)],
+            key=lambda p: str(p)  # Use string representation for sorting
         )
 
-    console.print(table)
+        if not workflow_paths:
+            console.print(Panel("""
+No workflows found. To get started, create a workflow file like this:
+
+[blue]example-workflow.yaml:[/blue]
+name: Example Workflow
+jobs:
+  hello:
+    steps:
+      - name: Say Hello
+        run: echo "Hello, LocalFlow!"
+""", title="No Workflows Found", border_style="yellow"))
+            return
+
+        # Create and populate the table
+        table = Table(
+            title="Available Workflows",
+            show_header=True,
+            header_style="bold blue",
+            border_style="blue"
+        )
+
+        table.add_column("Name", justify="left", no_wrap=True)
+        table.add_column("Description", justify="left", no_wrap=False)
+        table.add_column("Version", justify="left", no_wrap=True)
+        table.add_column("Author", justify="left", no_wrap=True)
+        table.add_column("Last Modified", justify="left")
+        table.add_column("Size", justify="right")
+
+        for workflow in workflow_paths:
+            with open(workflow, 'r') as file:
+                wf = yaml.safe_load(file)
+
+            stats = workflow.stat()
+            table.add_row(
+                workflow.name,
+                wf['description'],
+                wf['version'],
+                wf['author'],
+                datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                f"{stats.st_size / 1024:.1f} KB"
+            )
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Error listing workflows: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
 
 @cli.command()
 @click.pass_obj
 def config(config: Config):
     """Show current configuration"""
-    table = Table(title="Current Configuration")
-    table.add_column("Setting")
-    table.add_column("Value")
+    try:
+        table = Table(
+            title="Current Configuration",
+            show_header=True,
+            header_style="bold blue",
+            border_style="blue"
+        )
 
-    for key, value in asdict(config).items():
-        table.add_row(str(key), str(value))
+        table.add_column("Setting", style="bold")
+        table.add_column("Value")
 
-    console.print(table)
+        for key, value in asdict(config).items():
+            table.add_row(str(key), str(value))
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Error displaying configuration: {e}[/red]")
 
 if __name__ == '__main__':
     cli()
