@@ -1,6 +1,5 @@
 """Unit tests for LocalFlow implementation."""
 
-import os
 import tempfile
 from pathlib import Path
 from typing import Generator
@@ -12,8 +11,6 @@ from localflow import (
     Config, WorkflowExecutor, OutputConfig, OutputMode,
     resolve_workflow_path, cli
 )
-from schema import Workflow, Job
-
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Provide a temporary directory for test files."""
@@ -89,7 +86,11 @@ def test_workflow_path_resolution(config: Config, example_workflow_file: Path):
         }, f)
 
     # Test finding local workflow
-    path = resolve_workflow_path(config.workflows_dir, 'wf_local123')
+    path = resolve_workflow_path(
+        config.workflows_dir,
+        'wf_local123',
+        local_dir=config.local_workflows_dir
+    )
     assert path == local_workflow.resolve()
 
     # Test workflow not found
@@ -110,35 +111,82 @@ def test_workflow_executor(config: Config, example_workflow_file: Path):
     assert executor.run()
 
 def test_cli_commands(config: Config, example_workflow_file: Path):
-    """Test CLI commands."""
+    """Test CLI commands with proper workflow setup."""
     runner = CliRunner()
 
-    # Test list command
-    result = runner.invoke(cli, ['list'])
-    assert result.exit_code == 0
+    with runner.isolated_filesystem() as fs:
+        # Create required directories
+        config.local_workflows_dir.mkdir(parents=True, exist_ok=True)
+        config.workflows_dir.mkdir(parents=True, exist_ok=True)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Test jobs command
-    result = runner.invoke(cli, ['jobs', 'wf_test123'])
-    assert result.exit_code == 0
+        # Copy workflow to local directory
+        workflow_path = config.local_workflows_dir / example_workflow_file.name
+        workflow_path.write_text(example_workflow_file.read_text())
 
-    # Test run command
-    result = runner.invoke(cli, ['run', 'wf_test123'])
-    assert result.exit_code == 0
+        # Create a temporary config file
+        config_file = Path(fs) / 'config.yml'
+        with open(config_file, 'w') as f:
+            yaml.dump({
+                'workflows_dir': str(config.workflows_dir),
+                'local_workflows_dir': str(config.local_workflows_dir),
+                'log_dir': str(config.log_dir),
+                'log_level': config.log_level,
+                'docker_enabled': config.docker_enabled,
+                'docker_default_image': config.docker_default_image,
+                'show_output': config.show_output,
+                'default_shell': config.default_shell
+            }, f)
+
+        env = {
+            'LOCALFLOW_CONFIG': str(config_file)
+        }
+
+        # Test commands with environment
+        result = runner.invoke(cli, ['list'], env=env)
+        assert result.exit_code == 0, f"List command failed: {result.output}"
+
+        result = runner.invoke(cli, ['jobs', 'wf_test123'], env=env)
+        assert result.exit_code == 0, f"Jobs command failed: {result.output}"
+
+        result = runner.invoke(cli, ['run', 'wf_test123'], env=env)
+        assert result.exit_code == 0, f"Run command failed: {result.output}"
 
 def test_output_handling(config: Config, example_workflow_file: Path, temp_dir: Path):
     """Test output handling configurations."""
-    output_file = temp_dir / 'output.log'
+    # Create output directory that persists through the test
+    output_dir = temp_dir / 'output'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / 'output.log'
 
-    # Test file output
+    # Create the output configuration
     config.output_config = OutputConfig(
         file=output_file,
         mode=OutputMode.FILE,
-        stdout=False
+        stdout=False,
+        append=False
     )
 
+    # Execute workflow
     executor = WorkflowExecutor(example_workflow_file, config)
-    assert executor.run()
-    assert output_file.exists()
+
+    try:
+        # Run workflow and verify execution
+        assert executor.run(), "Workflow execution failed"
+
+        # Verify file exists and has content
+        assert output_file.exists(), "Output file was not created"
+        content = output_file.read_text()
+        assert content.strip(), "Output file is empty"
+        assert "Setting up" in content, "Expected output missing from log file"
+        assert "Testing" in content, "Expected output missing from log file"
+
+    finally:
+        # Cleanup
+        if output_file.exists():
+            output_file.unlink()
+        if output_dir.exists():
+            output_dir.rmdir()
 
 def test_condition_evaluation(config: Config, example_workflow_file: Path):
     """Test job condition evaluation."""
@@ -259,8 +307,12 @@ def test_local_workflow_override(config: Config, temp_dir: Path):
     with open(local_file, 'w') as f:
         yaml.dump(dict(workflow_content, name='Local Workflow'), f)
 
-    # Test that local workflow is preferred
-    path = resolve_workflow_path(config.workflows_dir, 'wf_override')
+    # Test that local workflow is preferred when local_dir is provided
+    path = resolve_workflow_path(
+        config.workflows_dir,
+        'wf_override',
+        local_dir=config.local_workflows_dir
+    )
     assert path == local_file.resolve()
 
 def test_error_handling(config: Config, temp_dir: Path):

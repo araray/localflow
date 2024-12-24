@@ -230,37 +230,80 @@ class DockerExecutor:
                 'output': f"Docker execution failed: {str(e)}"
             }
 
+
 class OutputHandler:
-    """Handles workflow output routing"""
+    """Handles workflow output routing and file management."""
     def __init__(self, config: OutputConfig):
         self.config = config
         self._file_handle: Optional[TextIO] = None
 
     def __enter__(self):
-        """Set up output handling on context enter"""
-        if self.config.file and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            # Ensure parent directory exists
-            self.config.file.parent.mkdir(parents=True, exist_ok=True)
-            mode = 'a' if self.config.append else 'w'
-            self._file_handle = open(self.config.file, mode)
+        """Set up output handling and ensure file creation."""
+        if self.config and self.config.file and self.config.mode != OutputMode.STDOUT:
+            try:
+                # Ensure parent directories exist
+                self.config.file.parent.mkdir(parents=True, exist_ok=True)
+
+                # Open file with appropriate mode
+                mode = 'a' if self.config.append else 'w'
+                self._file_handle = open(self.config.file, mode)
+
+                # Write initial newline to ensure file exists
+                self._file_handle.write('')
+                self._file_handle.flush()
+            except Exception as e:
+                if self._file_handle:
+                    self._file_handle.close()
+                raise ValueError(f"Failed to initialize output file: {e}") from e
         return self
 
+    def write(self, content: str):
+        """Write content to configured outputs."""
+        if self._file_handle and self.config.mode != OutputMode.STDOUT:
+            self._file_handle.write(content)
+            self._file_handle.flush()
+
+        if self.config.stdout and self.config.mode != OutputMode.FILE:
+            sys.stdout.write(content)
+            sys.stdout.flush()
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up on context exit"""
+        """Clean up resources when exiting the context."""
         if self._file_handle:
-            self._file_handle.close()
+            try:
+                self._file_handle.flush()
+                self._file_handle.close()
+            finally:
+                self._file_handle = None
 
     def write(self, content: str):
-        """Write content according to configuration"""
-        # Write to stdout if configured
+        """
+        Write content to configured outputs.
+
+        The content is written to file and/or stdout based on the configuration.
+        All writes are immediately flushed to ensure content is persisted.
+        """
+        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
+            self._file_handle.write(content)
+            self._file_handle.flush()
+
         if self.config.stdout and self.config.mode in (OutputMode.STDOUT, OutputMode.BOTH):
             sys.stdout.write(content)
             sys.stdout.flush()
 
-        # Write to file if configured
-        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            self._file_handle.write(content)
-            self._file_handle.flush()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Clean up resources when exiting the context.
+
+        Ensures file handle is properly closed and flushed, even in error cases.
+        """
+        if self._file_handle:
+            try:
+                self._file_handle.flush()
+                self._file_handle.close()
+            finally:
+                self._file_handle = None
+
 
 @dataclass
 class WorkflowExecutor:
@@ -278,6 +321,7 @@ class WorkflowExecutor:
     logger: Optional[logging.Logger] = None
     docker_executor: Optional[DockerExecutor] = None
     output_config: Optional[OutputConfig] = None
+    _output_handler: Optional[OutputHandler] = None
 
     # Track completed jobs for condition evaluation
     _completed_jobs: Dict[str, bool] = field(default_factory=dict)    # Store loaded workflow
@@ -320,10 +364,7 @@ class WorkflowExecutor:
         )
 
     def __post_init__(self):
-        """
-        Initialize the executor after dataclass initialization.
-        Sets up logging, Docker executor if enabled, and loads the workflow.
-        """
+        """Initialize the executor after dataclass initialization."""
         # Initialize logger
         self.logger = LocalFlowLogger(
             self.config,
@@ -339,6 +380,10 @@ class WorkflowExecutor:
 
         # Setup output configuration
         self._setup_output_config()
+
+        # Initialize output handler if in file mode
+        if self.output_config and self.output_config.mode != OutputMode.STDOUT:
+            self._output_handler = OutputHandler(self.output_config)
 
     def _load_workflow(self) -> None:
         """
@@ -374,20 +419,10 @@ class WorkflowExecutor:
         self.output_config = workflow_output or self.config.output_config
 
     def execute_step(self, step: dict, env: Dict[str, str] = None) -> bool:
-        """
-        Execute a single workflow step with proper output handling.
-
-        Args:
-            step: Dictionary containing step configuration
-            env: Environment variables for step execution
-
-        Returns:
-            bool: True if step executed successfully, False otherwise
-        """
+        """Execute a single workflow step with proper output handling."""
         step_name = step.get('name', 'Unnamed step')
         command = step.get('run')
-        working_dir = step.get('working-directory',
-                             str(self.workflow_path.parent))
+        working_dir = step.get('working-directory', str(self.workflow_path.parent))
 
         if not command:
             self.logger.error(f"Step '{step_name}' is missing required 'run' field")
@@ -395,11 +430,12 @@ class WorkflowExecutor:
 
         self.logger.info(f"Executing step: {step_name}")
 
+        output_handler = self._output_handler or OutputHandler(self.output_config)
+
         try:
-            with OutputHandler(self.output_config) as output:
-                # Execute in Docker if enabled and step isn't marked local
-                if (self.docker_executor and
-                    not step.get('local', False)):
+            with output_handler:
+                # Execute command and handle output
+                if self.docker_executor and not step.get('local', False):
                     result = self.docker_executor.run_in_container(
                         command, env, working_dir
                     )
@@ -419,17 +455,20 @@ class WorkflowExecutor:
                     }
 
                 # Handle command output
-                if result['output']:
-                    output.write(result['output'])
-                    if not result['output'].endswith('\n'):
-                        output.write('\n')
-                    self.logger.debug(f"Output: {result['output']}")
+                output_text = result.get('output', '')
+                if output_text:
+                    output_handler.write(output_text)
+                    if not output_text.endswith('\n'):
+                        output_handler.write('\n')
+                else:
+                    # Write empty line to maintain file existence
+                    output_handler.write('\n')
 
                 success = result['exit_code'] == 0
                 if not success:
                     error_msg = (f"Step '{step_name}' failed with exit code "
                                f"{result['exit_code']}\n")
-                    output.write(error_msg)
+                    output_handler.write(error_msg)
                     self.logger.error(error_msg.strip())
 
                 return success
@@ -441,27 +480,27 @@ class WorkflowExecutor:
                 output.write(error_msg)
             return False
 
-    def _execute_job_steps(self, job: Job) -> bool:
-        """Execute all steps in a job"""
-        try:
-            self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
+        def _execute_job_steps(self, job: Job) -> bool:
+            """Execute all steps in a job"""
+            try:
+                self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
 
-            # Build execution environment
-            env = os.environ.copy()
-            env.update(self._workflow.env)
-            env.update(job.env)
+                # Build execution environment
+                env = os.environ.copy()
+                env.update(self._workflow.env)
+                env.update(job.env)
 
-            # Execute each step
-            for step in job.steps:
-                if not self.execute_step(step, env):
-                    return False
+                # Execute each step
+                for step in job.steps:
+                    if not self.execute_step(step, env):
+                        return False
 
-            # Record successful completion using job ID
-            self._completed_jobs[job.id] = True
-            return True
-        except Exception as e:
-            self._completed_jobs[job.id] = False
-            raise
+                # Record successful completion using job ID
+                self._completed_jobs[job.id] = True
+                return True
+            except Exception as e:
+                self._completed_jobs[job.id] = False
+                raise
 
     def _check_job_conditions(self, job: Job) -> bool:
         """
@@ -502,83 +541,170 @@ class WorkflowExecutor:
             self.logger.error(f"Failed to execute job: {e}")
             return False
 
-    def _execute_job_with_deps(self, job: Job, visited: Set[str] = None) -> bool:
+    def _execute_job_steps(self, job: Job) -> bool:
         """
-        Execute a job ensuring all dependencies run first.
+        Execute all steps in a job sequentially.
+
+        This method:
+        1. Sets up the execution environment with workflow and job variables
+        2. Executes each step in order
+        3. Tracks job completion status
+
+        Args:
+            job: Job instance containing steps to execute
+
+        Returns:
+            bool: True if all steps executed successfully, False otherwise
+        """
+        try:
+            self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
+
+            # Build execution environment by combining workflow and job variables
+            env = os.environ.copy()
+            env.update(self._workflow.env)  # Add workflow-level variables
+            env.update(job.env)            # Add job-level variables
+
+            # Execute each step in sequence
+            for step in job.steps:
+                if not self.execute_step(step, env):
+                    return False
+
+            # Record successful completion using job ID
+            self._completed_jobs[job.id] = True
+            return True
+
+        except Exception as e:
+            self._completed_jobs[job.id] = False
+            raise
+
+    def _execute_job_with_deps(self, job: Job, visited: Set[str] = None, execution_path: Set[str] = None) -> bool:
+        """
+        Execute a job ensuring all dependencies run first, with proper cycle detection
+        and dependency resolution.
+
+        This implementation uses two tracking sets:
+        - visited: Tracks all jobs we've seen to detect cycles
+        - execution_path: Tracks the current execution chain to allow parallel paths
 
         Args:
             job: Job to execute
-            visited: Set of job IDs already processed (for cycle detection)
+            visited: Set of all job IDs seen during traversal
+            execution_path: Set of job IDs in current execution chain
+
+        Returns:
+            bool: True if job and all dependencies executed successfully
+
+        Example dependency graph:
+            A -> B -> C
+            A -> D -> C
+
+        In this case, C should run only after both B and D complete, but B and D
+        can run in parallel after A. The execution_path helps track the current
+        chain (e.g. A->B->C vs A->D->C) while visited tracks all jobs seen.
         """
         if visited is None:
             visited = set()
+        if execution_path is None:
+            execution_path = set()
 
-        # Check for cycles
-        if job.id in visited:
-            self.logger.error(f"Circular dependency detected for job '{job.name}'")
+        # Check if we're in a cycle
+        if job.id in execution_path:
+            self.logger.error(
+                f"Circular dependency detected in path: "
+                f"{' -> '.join(execution_path)} -> {job.id}"
+            )
             return False
 
-        visited.add(job.id)
+        # Add job to current execution path
+        execution_path.add(job.id)
 
-        # Execute dependencies first
-        for dep_id in job.needs:
-            dep_job = next(j for j in self._workflow.jobs.values() if j.id == dep_id)
-            if not self._execute_job_with_deps(dep_job, visited):
-                return False
+        try:
+            # First, process all dependencies if not already completed
+            for dep_id in job.needs:
+                # Skip if dependency already completed successfully
+                if dep_id in self._completed_jobs and self._completed_jobs[dep_id]:
+                    continue
 
-        # Now check conditions
-        context = {j.id: j.id in self._completed_jobs
-                  for j in self._workflow.jobs.values()}
+                # Find the dependency job
+                try:
+                    dep_job = next(j for j in self._workflow.jobs.values() if j.id == dep_id)
+                except StopIteration:
+                    self.logger.error(f"Dependency job '{dep_id}' not found")
+                    return False
 
-        if job.condition:
-            try:
-                if not job.condition.evaluate(context):
-                    self.logger.info(f"Skipping job '{job.name}' - conditions not met")
-                    return True
-            except Exception as e:
-                self.logger.error(str(e))
-                return False
+                # Execute dependency if not visited or not completed
+                if dep_id not in visited or not self._completed_jobs.get(dep_id, False):
+                    if not self._execute_job_with_deps(dep_job, visited, execution_path.copy()):
+                        return False
 
-        # Execute the job itself
-        if self._execute_job_steps(job):
-            self._completed_jobs[job.id] = True
-            return True
-        return False
+            # Mark this job as visited
+            visited.add(job.id)
+
+            # Check if job already completed successfully
+            if job.id in self._completed_jobs and self._completed_jobs[job.id]:
+                return True
+
+            # Check conditions now that dependencies are handled
+            if job.condition:
+                try:
+                    context = {
+                        j.id: j.id in self._completed_jobs and self._completed_jobs[j.id]
+                        for j in self._workflow.jobs.values()
+                    }
+                    if not job.condition.evaluate(context):
+                        self.logger.info(
+                            f"Skipping job '{job.name}' (ID: {job.id}) - conditions not met"
+                        )
+                        # Mark as completed but not necessarily successful
+                        self._completed_jobs[job.id] = True
+                        return True
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to evaluate conditions for job '{job.name}': {e}"
+                    )
+                    return False
+
+            # Execute the job itself
+            success = self._execute_job_steps(job)
+            self._completed_jobs[job.id] = success
+            return success
+
+        finally:
+            # Always remove job from execution path when done
+            execution_path.remove(job.id)
 
     def run(self) -> bool:
-        """
-        Execute the entire workflow respecting job dependencies.
-
-        Returns:
-            bool: True if workflow executed successfully, False otherwise
-        """
+        """Execute the entire workflow respecting job dependencies."""
         if not self._workflow:
             raise ValueError("No workflow loaded")
 
         try:
-            # Clear completed jobs at start of workflow
-            self._completed_jobs.clear()
+            # Enter output handler context for entire workflow execution
+            with self._output_handler or OutputHandler(self.output_config):
+                # Clear completed jobs at start of workflow
+                self._completed_jobs.clear()
 
-            # Execute all jobs in workflow
-            for job_name in self._workflow.jobs:
-                if job_name not in self._completed_jobs:
-                    if not self.execute_job(job_name):
-                        return False
+                # Execute all jobs in workflow
+                for job_name in self._workflow.jobs:
+                    if job_name not in self._completed_jobs:
+                        if not self.execute_job(job_name):
+                            return False
 
-            return True
+                return True
 
         except Exception as e:
             self.logger.error(f"Workflow execution failed: {e}")
             return False
 
 
-def resolve_workflow_path(workflows_dir: Path, workflow_id: str) -> Path:
+def resolve_workflow_path(workflows_dir: Path, workflow_id: str, local_dir: Optional[Path] = None) -> Path:
     """
     Resolve workflow path from ID, checking both local and global directories.
 
     Args:
         workflows_dir: Global workflows directory from config
         workflow_id: ID of the workflow to find
+        local_dir: Optional local workflows directory
 
     Returns:
         Path: Resolved path to the workflow file
@@ -586,35 +712,32 @@ def resolve_workflow_path(workflows_dir: Path, workflow_id: str) -> Path:
     Raises:
         FileNotFoundError: If workflow cannot be found
     """
-    # First check local directory
-    local_dir = Path('.localflow')
-    if local_dir.exists():
-        for ext in ['.yml', '.yaml']:
-            for workflow_path in local_dir.glob(f'*{ext}'):
-                try:
-                    with open(workflow_path) as f:
-                        data = yaml.safe_load(f)
-                        if data and data.get('id') == workflow_id:
-                            return workflow_path.resolve()
-                except Exception:
-                    continue
+    def find_workflow_in_dir(directory: Path) -> Optional[Path]:
+        """Helper to find workflow in a directory."""
+        if directory.exists():
+            for ext in ['.yml', '.yaml']:
+                for path in directory.glob(f'*{ext}'):
+                    try:
+                        with open(path) as f:
+                            data = yaml.safe_load(f)
+                            if data and data.get('id') == workflow_id:
+                                return path.resolve()
+                    except Exception:
+                        continue
+        return None
+
+    # First check local directory (prioritize local_dir parameter if provided)
+    search_local_dir = local_dir if local_dir else Path('.localflow')
+    if local_path := find_workflow_in_dir(search_local_dir):
+        return local_path
 
     # Then check global directory
-    if workflows_dir.exists():
-        for ext in ['.yml', '.yaml']:
-            for workflow_path in workflows_dir.glob(f'*{ext}'):
-                try:
-                    with open(workflow_path) as f:
-                        data = yaml.safe_load(f)
-                        if data and data.get('id') == workflow_id:
-                            return workflow_path.resolve()
-                except Exception:
-                    continue
+    if global_path := find_workflow_in_dir(workflows_dir):
+        return global_path
 
-    # If we get here, the workflow wasn't found
     raise FileNotFoundError(
-        f"Workflow '{workflow_id}' not found in either local '.localflow' "
-        f"directory or global workflows directory at {workflows_dir}. "
+        f"Workflow '{workflow_id}' not found in either local directory at {search_local_dir} "
+        f"or global workflows directory at {workflows_dir}. "
         f"Available workflows can be listed using 'localflow list'"
     )
 
@@ -674,8 +797,12 @@ def run(config: Config, workflow: str, job: str, docker: bool,
         output: Optional[str], output_mode: str, append: bool):
     """Run a workflow file or specific job with output handling"""
     try:
-        workflow_path = resolve_workflow_path(config.workflows_dir, workflow)
-
+        # Pass local_workflows_dir from config
+        workflow_path = resolve_workflow_path(
+            config.workflows_dir,
+            workflow,
+            local_dir=config.local_workflows_dir
+        )
         if docker is not None:
             config.docker_enabled = docker
 

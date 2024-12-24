@@ -4,7 +4,6 @@ Handles ID generation, validation, and condition evaluation.
 """
 
 import hashlib
-import re
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -87,9 +86,21 @@ class Condition:
 
 @dataclass
 class Job:
-    """Represents a workflow job with metadata and execution details."""
-    name: str
+    """
+    Represents a workflow job with metadata and execution details.
+
+    Attributes:
+        id: Unique identifier for the job
+        name: Display name for the job
+        description: Optional description of the job's purpose
+        tags: Set of tags for categorizing the job
+        condition: Optional execution condition
+        steps: List of execution steps
+        env: Environment variables for this job
+        needs: Set of job IDs this job depends on
+    """
     id: str
+    name: str  # Adding the name field
     description: Optional[str] = None
     tags: Set[str] = field(default_factory=set)
     condition: Optional[Condition] = None
@@ -99,23 +110,16 @@ class Job:
 
     @classmethod
     def from_dict(cls, name: str, data: dict, workflow_id: str) -> 'Job':
-        """
-        Create a Job instance from dictionary data.
-
-        Args:
-            name: Job name
-            data: Dictionary containing job data
-            workflow_id: Parent workflow ID for scoping
-
-        Returns:
-            Job instance
-        """
-        # Generate deterministic job ID scoped to workflow
-        job_id = generate_id('job', f"{workflow_id}_{name}_{yaml.dump(data)}")
+        """Create a Job instance from dictionary data."""
+        # Use provided ID or generate one
+        job_id = data.get('id')
+        if not job_id:
+            content = f"{workflow_id}_{name}_{yaml.dump(data)}"
+            job_id = generate_id('job', content)
 
         return cls(
-            name=name,
             id=job_id,
+            name=name,  # Pass the name here
             description=data.get('description'),
             tags=set(data.get('tags', [])),
             condition=Condition.parse(data.get('condition', 'true')),
