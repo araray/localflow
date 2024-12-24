@@ -234,12 +234,14 @@ class DockerExecutor:
 class OutputHandler:
     """Handles workflow output routing and file management."""
     def __init__(self, config: OutputConfig):
+        if not isinstance(config.file, (Path, type(None))):
+            raise TypeError(f"`file` in OutputConfig must be a Path or None, got {type(config.file)}")
         self.config = config
-        self._file_handle: Optional[TextIO] = None
+        self._file_handle = None
 
     def __enter__(self):
         """Set up output handling and ensure file creation."""
-        if self.config and self.config.file and self.config.mode != OutputMode.STDOUT:
+        if self.config and self.config.file and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
             try:
                 # Ensure parent directories exist
                 self.config.file.parent.mkdir(parents=True, exist_ok=True)
@@ -247,23 +249,18 @@ class OutputHandler:
                 # Open file with appropriate mode
                 mode = 'a' if self.config.append else 'w'
                 self._file_handle = open(self.config.file, mode)
-
-                # Write initial newline to ensure file exists
-                self._file_handle.write('')
-                self._file_handle.flush()
+                logging.debug(f"Output file {self.config.file} created with mode '{mode}'.")
             except Exception as e:
-                if self._file_handle:
-                    self._file_handle.close()
                 raise ValueError(f"Failed to initialize output file: {e}") from e
         return self
 
     def write(self, content: str):
         """Write content to configured outputs."""
-        if self._file_handle and self.config.mode != OutputMode.STDOUT:
+        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
             self._file_handle.write(content)
             self._file_handle.flush()
-
-        if self.config.stdout and self.config.mode != OutputMode.FILE:
+            logging.debug(f"Written to file {self.config.file}: {content.strip()}")
+        if self.config.stdout and self.config.mode in (OutputMode.STDOUT, OutputMode.BOTH):
             sys.stdout.write(content)
             sys.stdout.flush()
 
@@ -271,38 +268,10 @@ class OutputHandler:
         """Clean up resources when exiting the context."""
         if self._file_handle:
             try:
-                self._file_handle.flush()
                 self._file_handle.close()
-            finally:
-                self._file_handle = None
-
-    def write(self, content: str):
-        """
-        Write content to configured outputs.
-
-        The content is written to file and/or stdout based on the configuration.
-        All writes are immediately flushed to ensure content is persisted.
-        """
-        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            self._file_handle.write(content)
-            self._file_handle.flush()
-
-        if self.config.stdout and self.config.mode in (OutputMode.STDOUT, OutputMode.BOTH):
-            sys.stdout.write(content)
-            sys.stdout.flush()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Clean up resources when exiting the context.
-
-        Ensures file handle is properly closed and flushed, even in error cases.
-        """
-        if self._file_handle:
-            try:
-                self._file_handle.flush()
-                self._file_handle.close()
-            finally:
-                self._file_handle = None
+                logging.debug(f"Output file {self.config.file} closed.")
+            except Exception as e:
+                logging.error(f"Failed to close output file {self.config.file}: {e}")
 
 
 @dataclass
@@ -381,8 +350,9 @@ class WorkflowExecutor:
         # Setup output configuration
         self._setup_output_config()
 
-        # Initialize output handler if in file mode
-        if self.output_config and self.output_config.mode != OutputMode.STDOUT:
+        # Initialize output handler if needed
+        if self.output_config and self.output_config.mode in (OutputMode.FILE, OutputMode.BOTH):
+            logging.debug(f"Initializing OutputHandler for file: {self.output_config.file}")
             self._output_handler = OutputHandler(self.output_config)
 
     def _load_workflow(self) -> None:

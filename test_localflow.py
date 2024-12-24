@@ -1,14 +1,17 @@
+from shlex import join
 """Unit tests for LocalFlow implementation."""
 
 import tempfile
 from pathlib import Path
 from typing import Generator
+import logging
 import pytest
+import os
 import yaml
 from click.testing import CliRunner
 
 from localflow import (
-    Config, WorkflowExecutor, OutputConfig, OutputMode,
+    Config, WorkflowExecutor, OutputConfig, OutputMode, OutputHandler,
     resolve_workflow_path, cli
 )
 @pytest.fixture
@@ -152,14 +155,25 @@ def test_cli_commands(config: Config, example_workflow_file: Path):
         result = runner.invoke(cli, ['run', 'wf_test123'], env=env)
         assert result.exit_code == 0, f"Run command failed: {result.output}"
 
+def test_output_handler_file_creation(temp_dir: Path):
+    """Test that OutputHandler creates the specified output file and writes content."""
+    output_file = Path(os.path.join(temp_dir, 'test_output.log'))
+    config = OutputConfig(file=output_file, mode=OutputMode.FILE, stdout=False)
+
+    content = "Test content"
+
+    with OutputHandler(config) as handler:
+        handler.write(content)
+
+    assert output_file.exists(), "Output file was not created."
+    assert output_file.read_text() == content, "Output content does not match."
+
 def test_output_handling(config: Config, example_workflow_file: Path, temp_dir: Path):
     """Test output handling configurations."""
-    # Create output directory that persists through the test
-    output_dir = temp_dir / 'output'
+    output_dir = Path(os.path.join(temp_dir, 'output'))
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / 'output.log'
+    output_file = Path(os.path.join(output_dir, 'output.log'))
 
-    # Create the output configuration
     config.output_config = OutputConfig(
         file=output_file,
         mode=OutputMode.FILE,
@@ -167,26 +181,32 @@ def test_output_handling(config: Config, example_workflow_file: Path, temp_dir: 
         append=False
     )
 
-    # Execute workflow
     executor = WorkflowExecutor(example_workflow_file, config)
 
     try:
+        # Log start
+        logging.debug("Starting test_output_handling.")
+
         # Run workflow and verify execution
         assert executor.run(), "Workflow execution failed"
 
-        # Verify file exists and has content
+        # Verify file exists
         assert output_file.exists(), "Output file was not created"
-        content = output_file.read_text()
-        assert content.strip(), "Output file is empty"
+
+        # Verify file content
+        content = output_file.read_text().strip()
+        assert content, "Output file is empty"
         assert "Setting up" in content, "Expected output missing from log file"
         assert "Testing" in content, "Expected output missing from log file"
-
+    except Exception as e:
+        raise AssertionError(f"Test failed: {e}")
     finally:
         # Cleanup
         if output_file.exists():
             output_file.unlink()
         if output_dir.exists():
             output_dir.rmdir()
+
 
 def test_condition_evaluation(config: Config, example_workflow_file: Path):
     """Test job condition evaluation."""
