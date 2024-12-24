@@ -12,11 +12,14 @@ dir_localflow=""
 # Look for localflow.py passed in the as parameter first
 if [[ -n $1 ]] && check_localflow_py $1; then
     dir_localflow=$1
+    shift
 elif [[ -n ${LOCALFLOW_DIR} ]] && check_localflow_py ${LOCALFLOW_DIR}; then
     dir_localflow=${LOCALFLOW_DIR}
 else
     echo "Could not locate Localflow directory."
+    exit 1
 fi
 
-echo "Localflow directory: ${dir_localflow}"
-#python ${dir_localflow}/localflow.py $@
+#echo "Localflow directory: ${dir_localflow}"
+
+python ${dir_localflow}/localflow.py $@
