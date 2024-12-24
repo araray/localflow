@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, TextIO, Any
+from typing import Dict, Optional, TextIO, Set
 
 import click
 import docker
@@ -30,6 +30,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.panel import Panel
 
+from schema import WorkflowRegistry, Workflow, Job
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -110,6 +111,7 @@ class Config:
     show_output: bool
     default_shell: str
     output_config: OutputConfig = field(default_factory=OutputConfig)
+    local_workflows_dir: Path = field(default_factory=lambda: Path('.localflow'))
 
     @classmethod
     def load_from_file(cls, config_path: Optional[Path]) -> 'Config':
@@ -126,6 +128,7 @@ class Config:
             # Create configuration with proper path expansion
             return cls(
                 workflows_dir=Path(os.path.expanduser(config_data.get('workflows_dir', '~/.localflow/workflows'))),
+                local_workflows_dir=Path(config_data.get('local_workflows_dir', '.localflow')),
                 log_dir=Path(os.path.expanduser(config_data.get('log_dir', '~/.localflow/logs'))),
                 log_level=config_data.get('log_level', 'INFO'),
                 docker_enabled=config_data.get('docker_enabled', False),
@@ -143,6 +146,7 @@ class Config:
         """Get default configuration."""
         return cls(
             workflows_dir=Path('~/.localflow/workflows').expanduser(),
+            local_workflows_dir=Path('.localflow'),
             log_dir=Path('~/.localflow/logs').expanduser(),
             log_level='INFO',
             docker_enabled=False,
@@ -258,39 +262,132 @@ class OutputHandler:
             self._file_handle.write(content)
             self._file_handle.flush()
 
+@dataclass
 class WorkflowExecutor:
-    """Execute workflow files with enhanced output handling"""
-    def __init__(self, workflow_path: Path, config: Config):
-        self.workflow_path = workflow_path
-        self.config = config
-        self.logger = LocalFlowLogger(config, workflow_path.stem).logger
-        self.docker_executor = DockerExecutor(config) if config.docker_enabled else None
-        self.workflow_data = self.load_workflow()
+    """
+    Execute workflow files with enhanced output handling.
 
-        # Merge workflow-level output config with global config
-        workflow_output = OutputConfig.from_dict(self.workflow_data.get('output', {}))
-        self.output_config = workflow_output or config.output_config
+    This class manages the execution of workflows, including:
+    - Loading and validating workflow definitions
+    - Managing job dependencies and conditions
+    - Handling execution environment and output
+    - Supporting both local and Docker-based execution
+    """
+    workflow_path: Path
+    config: Config
+    logger: Optional[logging.Logger] = None
+    docker_executor: Optional[DockerExecutor] = None
+    output_config: Optional[OutputConfig] = None
 
-    def load_workflow(self) -> Dict[str, Any]:
-        """Load and validate workflow file"""
+    # Track completed jobs for condition evaluation
+    _completed_jobs: Dict[str, bool] = field(default_factory=dict)    # Store loaded workflow
+    _workflow: Optional[Workflow] = None
+
+    def _get_job_by_id_or_name(self, job_identifier: str) -> Job:
+        """
+        Find a job by either its ID or name.
+
+        This method first tries to find a job by ID, and if not found,
+        falls back to looking up by name. This maintains backward compatibility
+        while supporting the new ID-based referencing.
+
+        Args:
+            job_identifier: Either a job ID or job name
+
+        Returns:
+            Job: The found job instance
+
+        Raises:
+            ValueError: If no job matches the given identifier
+        """
+        # First try to find by ID
+        for job in self._workflow.jobs.values():
+            if job.id == job_identifier:
+                return job
+
+        # If not found by ID, try to find by name
+        if job_identifier in self._workflow.jobs:
+            return self._workflow.jobs[job_identifier]
+
+        # If we get here, the job wasn't found
+        available_jobs = [
+            f"{job.name} (ID: {job.id})"
+            for job in self._workflow.jobs.values()
+        ]
+        raise ValueError(
+            f"Job '{job_identifier}' not found. Available jobs: "
+            f"{', '.join(available_jobs)}"
+        )
+
+    def __post_init__(self):
+        """
+        Initialize the executor after dataclass initialization.
+        Sets up logging, Docker executor if enabled, and loads the workflow.
+        """
+        # Initialize logger
+        self.logger = LocalFlowLogger(
+            self.config,
+            self.workflow_path.stem
+        ).logger
+
+        # Setup Docker executor if enabled
+        if self.config.docker_enabled:
+            self.docker_executor = DockerExecutor(self.config)
+
+        # Load and validate workflow
+        self._load_workflow()
+
+        # Setup output configuration
+        self._setup_output_config()
+
+    def _load_workflow(self) -> None:
+        """
+        Load and validate the workflow from the specified path.
+        Raises ValueError if the workflow is invalid.
+        """
         try:
-            with open(self.workflow_path) as f:
-                workflow_data = yaml.safe_load(f)
+            # Load workflow using new schema
+            self._workflow = Workflow.from_file(self.workflow_path)
 
-                if not isinstance(workflow_data, dict):
-                    raise ValueError("Workflow must be a YAML dictionary")
-                if 'jobs' not in workflow_data:
-                    raise ValueError("Workflow must contain a 'jobs' section")
+            # Validate workflow
+            errors = self._workflow.validate()
+            if errors:
+                raise ValueError(
+                    "Workflow validation failed:\n" +
+                    "\n".join(f"- {error}" for error in errors)
+                )
 
-                return workflow_data
         except Exception as e:
-            raise ValueError(f"Failed to load workflow file: {e}")
+            raise ValueError(f"Failed to load workflow: {e}")
+
+    def _setup_output_config(self) -> None:
+        """
+        Configure output handling by merging workflow-level settings
+        with global configuration.
+        """
+        # Get workflow-level output config if it exists
+        workflow_output = OutputConfig.from_dict(
+            getattr(self._workflow, 'output', {})
+        )
+
+        # Use workflow config if present, otherwise use global config
+        self.output_config = workflow_output or self.config.output_config
 
     def execute_step(self, step: dict, env: Dict[str, str] = None) -> bool:
-        """Execute a single workflow step with output handling"""
+        """
+        Execute a single workflow step with proper output handling.
+
+        Args:
+            step: Dictionary containing step configuration
+            env: Environment variables for step execution
+
+        Returns:
+            bool: True if step executed successfully, False otherwise
+        """
         step_name = step.get('name', 'Unnamed step')
         command = step.get('run')
-        working_dir = step.get('working-directory', str(self.workflow_path.parent))
+        working_dir = step.get('working-directory',
+                             str(self.workflow_path.parent))
 
         if not command:
             self.logger.error(f"Step '{step_name}' is missing required 'run' field")
@@ -300,9 +397,14 @@ class WorkflowExecutor:
 
         try:
             with OutputHandler(self.output_config) as output:
-                if self.config.docker_enabled and not step.get('local', False):
-                    result = self.docker_executor.run_in_container(command, env, working_dir)
+                # Execute in Docker if enabled and step isn't marked local
+                if (self.docker_executor and
+                    not step.get('local', False)):
+                    result = self.docker_executor.run_in_container(
+                        command, env, working_dir
+                    )
                 else:
+                    # Execute locally
                     process = subprocess.run(
                         command,
                         shell=True,
@@ -316,17 +418,20 @@ class WorkflowExecutor:
                         'output': process.stdout + process.stderr
                     }
 
+                # Handle command output
                 if result['output']:
                     output.write(result['output'])
                     if not result['output'].endswith('\n'):
-                        output.write('\n')  # Ensure output ends with newline
+                        output.write('\n')
                     self.logger.debug(f"Output: {result['output']}")
 
                 success = result['exit_code'] == 0
                 if not success:
-                    error_msg = f"Step '{step_name}' failed with exit code {result['exit_code']}\n"
+                    error_msg = (f"Step '{step_name}' failed with exit code "
+                               f"{result['exit_code']}\n")
                     output.write(error_msg)
                     self.logger.error(error_msg.strip())
+
                 return success
 
         except Exception as e:
@@ -336,74 +441,180 @@ class WorkflowExecutor:
                 output.write(error_msg)
             return False
 
-    def execute_job(self, job_name: str, job_data: dict) -> bool:
+    def _execute_job_steps(self, job: Job) -> bool:
         """Execute all steps in a job"""
-        self.logger.info(f"Starting job: {job_name}")
-
-        # Get job-level environment variables
-        env = os.environ.copy()
-        if 'env' in self.workflow_data:
-            env.update(self.workflow_data['env'])
-        if 'env' in job_data:
-            env.update(job_data['env'])
-
-        for step in job_data.get('steps', []):
-            if not self.execute_step(step, env):
-                return False
-
-        return True
-
-    def run_job(self, job_name: str) -> bool:
-        """Execute a specific job from the workflow"""
         try:
-            # Check if job exists
-            if job_name not in self.workflow_data.get('jobs', {}):
-                raise ValueError(
-                    f"Job '{job_name}' not found in workflow. "
-                    f"Available jobs: {', '.join(self.workflow_data['jobs'].keys())}"
-                )
+            self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
 
-            # Get job data and execute
-            job_data = self.workflow_data['jobs'][job_name]
-            return self.execute_job(job_name, job_data)
+            # Build execution environment
+            env = os.environ.copy()
+            env.update(self._workflow.env)
+            env.update(job.env)
 
+            # Execute each step
+            for step in job.steps:
+                if not self.execute_step(step, env):
+                    return False
+
+            # Record successful completion using job ID
+            self._completed_jobs[job.id] = True
+            return True
         except Exception as e:
-            self.logger.error(f"Job execution failed: {e}")
+            self._completed_jobs[job.id] = False
+            raise
+
+    def _check_job_conditions(self, job: Job) -> bool:
+        """
+        Check if a job's conditions are met.
+
+        Args:
+            job: Job instance to check
+
+        Returns:
+            bool: True if conditions are met or no conditions exist
+        """
+        if not job.condition:
+            return True
+
+        # Build context of completed jobs using IDs
+        context = {
+            j.id: j.id in self._completed_jobs
+            for j in self._workflow.jobs.values()
+        }
+
+        try:
+            return job.condition.evaluate(context)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to evaluate conditions for job '{job.name}': {e}"
+            )
             return False
 
-    def run(self) -> bool:
-        """Execute the entire workflow"""
+    def execute_job(self, job_identifier: str) -> bool:
+        """Execute a job and its dependencies."""
+        if not self._workflow:
+            raise ValueError("No workflow loaded")
+
         try:
-            for job_name, job_data in self.workflow_data.get('jobs', {}).items():
-                if not self.execute_job(job_name, job_data):
-                    return False
+            job = self._get_job_by_id_or_name(job_identifier)
+            return self._execute_job_with_deps(job)
+        except Exception as e:
+            self.logger.error(f"Failed to execute job: {e}")
+            return False
+
+    def _execute_job_with_deps(self, job: Job, visited: Set[str] = None) -> bool:
+        """
+        Execute a job ensuring all dependencies run first.
+
+        Args:
+            job: Job to execute
+            visited: Set of job IDs already processed (for cycle detection)
+        """
+        if visited is None:
+            visited = set()
+
+        # Check for cycles
+        if job.id in visited:
+            self.logger.error(f"Circular dependency detected for job '{job.name}'")
+            return False
+
+        visited.add(job.id)
+
+        # Execute dependencies first
+        for dep_id in job.needs:
+            dep_job = next(j for j in self._workflow.jobs.values() if j.id == dep_id)
+            if not self._execute_job_with_deps(dep_job, visited):
+                return False
+
+        # Now check conditions
+        context = {j.id: j.id in self._completed_jobs
+                  for j in self._workflow.jobs.values()}
+
+        if job.condition:
+            try:
+                if not job.condition.evaluate(context):
+                    self.logger.info(f"Skipping job '{job.name}' - conditions not met")
+                    return True
+            except Exception as e:
+                self.logger.error(str(e))
+                return False
+
+        # Execute the job itself
+        if self._execute_job_steps(job):
+            self._completed_jobs[job.id] = True
             return True
+        return False
+
+    def run(self) -> bool:
+        """
+        Execute the entire workflow respecting job dependencies.
+
+        Returns:
+            bool: True if workflow executed successfully, False otherwise
+        """
+        if not self._workflow:
+            raise ValueError("No workflow loaded")
+
+        try:
+            # Clear completed jobs at start of workflow
+            self._completed_jobs.clear()
+
+            # Execute all jobs in workflow
+            for job_name in self._workflow.jobs:
+                if job_name not in self._completed_jobs:
+                    if not self.execute_job(job_name):
+                        return False
+
+            return True
+
         except Exception as e:
             self.logger.error(f"Workflow execution failed: {e}")
             return False
 
-def resolve_workflow_path(workflows_dir: Path, workflow_name: str) -> Path:
-    """
-    Resolve workflow path from name, supporting both direct paths and names from workflows directory.
-    Also handles both .yml and .yaml extensions.
-    """
-    # First, check if it's a direct path
-    direct_path = Path(workflow_name)
-    if direct_path.exists():
-        return direct_path.resolve()
 
-    # Remove any extension from the workflow name
-    base_name = Path(workflow_name).stem
+def resolve_workflow_path(workflows_dir: Path, workflow_id: str) -> Path:
+    """
+    Resolve workflow path from ID, checking both local and global directories.
 
-    # Check both extensions in the workflows directory
-    for ext in ['.yml', '.yaml']:
-        workflow_path = workflows_dir / f"{base_name}{ext}"
-        if workflow_path.exists():
-            return workflow_path.resolve()
+    Args:
+        workflows_dir: Global workflows directory from config
+        workflow_id: ID of the workflow to find
+
+    Returns:
+        Path: Resolved path to the workflow file
+
+    Raises:
+        FileNotFoundError: If workflow cannot be found
+    """
+    # First check local directory
+    local_dir = Path('.localflow')
+    if local_dir.exists():
+        for ext in ['.yml', '.yaml']:
+            for workflow_path in local_dir.glob(f'*{ext}'):
+                try:
+                    with open(workflow_path) as f:
+                        data = yaml.safe_load(f)
+                        if data and data.get('id') == workflow_id:
+                            return workflow_path.resolve()
+                except Exception:
+                    continue
+
+    # Then check global directory
+    if workflows_dir.exists():
+        for ext in ['.yml', '.yaml']:
+            for workflow_path in workflows_dir.glob(f'*{ext}'):
+                try:
+                    with open(workflow_path) as f:
+                        data = yaml.safe_load(f)
+                        if data and data.get('id') == workflow_id:
+                            return workflow_path.resolve()
+                except Exception:
+                    continue
 
     # If we get here, the workflow wasn't found
     raise FileNotFoundError(
-        f"Workflow '{workflow_name}' not found in {workflows_dir}. "
+        f"Workflow '{workflow_id}' not found in either local '.localflow' "
+        f"directory or global workflows directory at {workflows_dir}. "
         f"Available workflows can be listed using 'localflow list'"
     )
 
@@ -487,7 +698,7 @@ def run(config: Config, workflow: str, job: str, docker: bool,
             )
 
             if job:
-                success = executor.run_job(job)
+                success = executor.execute_job(job)
             else:
                 success = executor.run()
 
@@ -507,20 +718,18 @@ def run(config: Config, workflow: str, job: str, docker: bool,
 def list(config: Config):
     """List available workflows"""
     try:
-        # Ensure workflows directory exists
-        config.workflows_dir.mkdir(parents=True, exist_ok=True)
+        # Initialize workflow registry
+        registry = WorkflowRegistry()
 
-        # First, collect all workflow files with both extensions
-        yml_files = config.workflows_dir.glob('*.yml')
-        yaml_files = config.workflows_dir.glob('*.yaml')
-
-        # Convert paths to strings for sorting and combine them
-        workflow_paths = sorted(
-            [path for path in (*yml_files, *yaml_files)],
-            key=lambda p: str(p)  # Use string representation for sorting
+        # Discover workflows from both global and local directories
+        registry.discover_workflows(
+            config.workflows_dir,
+            config.local_workflows_dir
         )
 
-        if not workflow_paths:
+        workflows = registry.find_workflows()
+
+        if not workflows:
             console.print(Panel("""
 No workflows found. To get started, create a workflow file like this:
 
@@ -548,37 +757,28 @@ jobs:
             border_style="blue"
         )
 
+        table.add_column("ID", justify="left", no_wrap=True)
         table.add_column("Name", justify="left", no_wrap=True)
         table.add_column("Description", justify="left", no_wrap=False)
+        table.add_column("Tags", justify="left", no_wrap=True)
         table.add_column("Version", justify="left", no_wrap=True)
         table.add_column("Author", justify="left", no_wrap=True)
-        table.add_column("Last Modified", justify="left")
-        table.add_column("Size", justify="right")
+        table.add_column("Location", justify="left", no_wrap=True)
 
-        for workflow_path in workflow_paths:
-            try:
-                with open(workflow_path, 'r') as file:
-                    workflow_data = yaml.safe_load(file) or {}
-
-                stats = workflow_path.stat()
-                table.add_row(
-                    workflow_path.name,
-                    workflow_data.get('description', 'No description'),
-                    workflow_data.get('version', 'N/A'),
-                    workflow_data.get('author', 'Unknown'),
-                    datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    f"{stats.st_size / 1024:.1f} KB"
-                )
-            except Exception as e:
-                # If there's an error reading a workflow, show it as invalid but don't crash
-                table.add_row(
-                    workflow_path.name,
-                    f"[red]Error: {str(e)}[/red]",
-                    "Invalid",
-                    "Invalid",
-                    datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    f"{stats.st_size / 1024:.1f} KB"
-                )
+        for workflow in workflows:
+            location = (
+                "Local" if workflow.source.parent == config.local_workflows_dir
+                else "Global"
+            )
+            table.add_row(
+                workflow.id,
+                workflow.name,
+                workflow.description or "No description",
+                ", ".join(sorted(workflow.tags)) or "None",
+                workflow.version,
+                workflow.author or "Unknown",
+                location
+            )
 
         console.print(table)
 
@@ -588,92 +788,65 @@ jobs:
             console.print_exception()
 
 @cli.command()
-@click.argument('workflow')
+@click.argument('workflow_id')
 @click.pass_obj
-def jobs(config: Config, workflow: str):
+def jobs(config: Config, workflow_id: str):
     """List available jobs in a workflow"""
     try:
-        # Resolve the workflow path
-        workflow_path = resolve_workflow_path(config.workflows_dir, workflow)
+        # Initialize registry and discover workflows
+        registry = WorkflowRegistry()
+        registry.discover_workflows(
+            config.workflows_dir,
+            config.local_workflows_dir
+        )
 
-        # Load and parse the workflow
-        with open(workflow_path) as f:
-            workflow_data = yaml.safe_load(f)
-
-        if not workflow_data or 'jobs' not in workflow_data:
-            console.print(f"[red]No jobs found in workflow: {workflow_path.name}[/red]")
+        # Get workflow
+        workflow = registry.get_workflow(workflow_id)
+        if not workflow:
+            console.print(
+                f"[red]No workflow found with ID: {workflow_id}[/red]"
+            )
             return
 
         # Create the jobs table
         table = Table(
-            title=f"Jobs in {workflow_path.name}",
+            title=f"Jobs in {workflow.name}",
             show_header=True,
             header_style="bold blue",
             border_style="blue"
         )
 
-        table.add_column("Job Name", justify="left", no_wrap=True)
+        table.add_column("ID", justify="left", no_wrap=True)
+        table.add_column("Name", justify="left", no_wrap=True)
         table.add_column("Description", justify="left")
-        table.add_column("Steps", justify="center")
+        table.add_column("Tags", justify="left")
         table.add_column("Dependencies", justify="left")
-        table.add_column("Environment", justify="left")
+        table.add_column("Condition", justify="left")
 
-        # Add job information to the table
-        for job_name, job_data in workflow_data['jobs'].items():
-            # Count steps
-            steps = job_data.get('steps', [])
-            steps_count = len(steps)
-
-            # Get dependencies
-            needs = job_data.get('needs', [])
-            needs_str = ', '.join(needs) if needs else 'None'
-
-            # Get environment variables
-            env = job_data.get('env', {})
-            env_str = ', '.join(f'{k}={v}' for k, v in env.items()) if env else 'None'
-
-            # Get job description (support both direct description and name fields)
-            description = job_data.get('description', job_data.get('name', 'No description'))
-
+        # Add job information
+        for job in workflow.jobs.values():
             table.add_row(
-                job_name,
-                description,
-                str(steps_count),
-                needs_str,
-                env_str
+                job.id,
+                job.name,
+                job.description or "No description",
+                ", ".join(sorted(job.tags)) or "None",
+                ", ".join(sorted(job.needs)) or "None",
+                job.condition.expression if job.condition else "None"
             )
 
-        console.print("\n")  # Add some spacing
-
-        # Print workflow metadata
-        metadata_panel = Panel(
-            f"""
-[bold]Workflow:[/bold] {workflow_data.get('name', workflow_path.name)}
-[bold]Description:[/bold] {workflow_data.get('description', 'No description')}
-[bold]Version:[/bold] {workflow_data.get('version', 'N/A')}
-[bold]Author:[/bold] {workflow_data.get('author', 'Unknown')}
-            """.strip(),
-            title="Workflow Information",
-            border_style="blue"
-        )
-        console.print(metadata_panel)
-        console.print("\n")  # Add some spacing
-
-        # Print the jobs table
+        console.print("\n")  # Add spacing
         console.print(table)
 
         # Print usage hint
         console.print("\n[dim]To run a specific job, use:[/dim]")
-        console.print(f"[dim]  localflow run {workflow_path.name} --job <job_name>[/dim]")
+        console.print(
+            f"[dim]  localflow run {workflow_id} --job <job_id>[/dim]"
+        )
 
-    except FileNotFoundError as e:
-        console.print(f"[red]{str(e)}[/red]")
-        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error listing jobs: {e}[/red]")
         if config.log_level == "DEBUG":
             console.print_exception()
-        sys.exit(1)
 
 @cli.command()
 @click.pass_obj
