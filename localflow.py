@@ -34,6 +34,35 @@ from rich.panel import Panel
 # Initialize Rich console for beautiful output
 console = Console()
 
+def list_files_in_folder(folder_name, extensions):
+    """
+    Checks if a folder exists in the current directory and lists files with specific extensions.
+
+    Parameters:
+    - folder_name (str): The name of the folder to check for.
+    - extensions (tuple): A tuple of file extensions (e.g., ('.txt', '.jpg')) to filter files by.
+
+    Returns:
+    - list: A list of file names with the specified extensions if the folder exists.
+    - None: If the folder does not exist.
+    """
+    try:
+        # Check if the folder exists in the current directory
+        if os.path.isdir(folder_name):
+            # Get all files in the folder with the specified extensions
+            files = [
+                file for file in os.listdir(folder_name)
+                if file.endswith(extensions) and os.path.isfile(os.path.join(folder_name, file))
+            ]
+            return files
+        else:
+            return None  # Return None if the folder does not exist
+    except Exception as e:
+        # Log the error or handle it appropriately without interrupting the program flow
+        print(f"An error occurred: {e}")
+        return None
+
+
 class OutputMode(str, Enum):
     """Output modes for workflow execution"""
     STDOUT = "stdout"    # Output only to stdout
