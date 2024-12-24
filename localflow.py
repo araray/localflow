@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, TextIO, Set
+from typing import Dict, Optional, Set
 
 import click
 import docker
@@ -392,7 +392,7 @@ class WorkflowExecutor:
         """Execute a single workflow step with proper output handling."""
         step_name = step.get('name', 'Unnamed step')
         command = step.get('run')
-        working_dir = step.get('working-directory', str(self.workflow_path.parent))
+        working_dir = step.get('working_dir', str(self.workflow_path.parent))
 
         if not command:
             self.logger.error(f"Step '{step_name}' is missing required 'run' field")

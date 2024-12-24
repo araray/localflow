@@ -100,13 +100,14 @@ class Job:
         needs: Set of job IDs this job depends on
     """
     id: str
-    name: str  # Adding the name field
+    name: str
     description: Optional[str] = None
     tags: Set[str] = field(default_factory=set)
     condition: Optional[Condition] = None
     steps: List[dict] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     needs: Set[str] = field(default_factory=set)
+    working_dir: Optional[str] = None
 
     @classmethod
     def from_dict(cls, name: str, data: dict, workflow_id: str) -> 'Job':
@@ -125,6 +126,7 @@ class Job:
             condition=Condition.parse(data.get('condition', 'true')),
             steps=data.get('steps', []),
             env=data.get('env', {}),
+            working_dir=data.get('working_dir', None),
             needs=set(data.get('needs', []))
         )
 
@@ -189,7 +191,8 @@ class Workflow:
                     condition=Condition.parse(job_data.get('condition', 'true')),
                     steps=job_data.get('steps', []),
                     env=job_data.get('env', {}),
-                    needs=set(job_data.get('needs', []))
+                    needs=set(job_data.get('needs', [])),
+                    working_dir=job_data.get('working_dir', None)
                 )
 
             return workflow

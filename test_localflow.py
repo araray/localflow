@@ -1,4 +1,3 @@
-from shlex import join
 """Unit tests for LocalFlow implementation."""
 
 import tempfile

@@ -46,6 +46,7 @@ jobs:
     tags: [setup]
     steps:
       - name: Setup
+        working_dir: /path/to/project
         run: echo "Setting up environment"
 
   test:
