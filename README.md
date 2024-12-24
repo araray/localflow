@@ -1,158 +1,126 @@
-# LocalFlow: Local Workflow Executor
+# LocalFlow
 
-LocalFlow brings the power of GitHub Actions-like workflow automation to your local environment. It allows you to define workflows in YAML and execute them either locally or in Docker containers, making it perfect for development, testing, and local automation tasks.
+LocalFlow is a powerful local workflow executor inspired by GitHub Actions. It allows you to define and run workflows locally or in Docker containers, with support for complex job dependencies, conditions, and environment management.
 
-## Key Features
+## Features
 
-LocalFlow combines the familiarity of GitHub Actions with the convenience of local execution:
+LocalFlow provides a robust set of features for workflow management:
 
-- Write workflows in simple, GitHub Actions-inspired YAML syntax
-- Run workflows locally or in isolated Docker containers
-- Execute entire workflows or specific jobs
-- Flexible output handling with file and console options
-- Rich, colorful command-line interface with progress tracking
-- Comprehensive logging system with debug capabilities
+- YAML-based workflow definitions similar to GitHub Actions
+- Support for both local project-specific and global workflows
+- Unique, persistent IDs for workflows and jobs
+- Complex job dependencies and conditional execution
+- Local and Docker-based execution environments
+- Rich console output with progress tracking
+- Flexible output handling (console, file, or both)
+- Job and workflow tagging system
 - Environment variable management at multiple levels
-- Docker integration for isolated execution
-
-## Quick Start
-
-Getting started with LocalFlow is straightforward:
-
-```bash
-# Install LocalFlow
-git clone https://github.com/yourusername/localflow.git
-cd localflow
-./install.py
-
-# Create your first workflow
-cat > ~/.localflow/workflows/hello.yml << EOL
-name: Hello World
-description: A simple example workflow
-version: 1.0.0
-author: Your Name
-
-jobs:
-  greet:
-    steps:
-      - name: Say Hello
-        run: echo "Hello from LocalFlow!"
-EOL
-
-# Run the workflow
-localflow run hello.yml
-```
 
 ## Installation
 
-LocalFlow requires Python 3.8 or higher and optionally Docker for container-based execution.
-
-### Using the Installation Script
-
-The recommended way to install LocalFlow is using the provided installation script:
+Install LocalFlow using pip:
 
 ```bash
-./install.py
-```
-
-The script will:
-1. Check prerequisites
-2. Create necessary directories
-3. Install Python dependencies
-4. Configure your shell environment
-5. Create an example workflow
-6. Set up initial configuration
-
-### Manual Installation
-
-If you prefer manual installation:
-
-```bash
-# Create required directories
-mkdir -p ~/.localflow/{workflows,logs}
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Create symbolic link
-ln -s $(pwd)/localflow.py ~/.local/bin/localflow
-
-# Copy and edit configuration
-cp config.example.yml ~/.localflow/config.yml
+python install-script.py
 ```
 
-## Configuration
+This will install LocalFlow and its dependencies. The installation script will also create necessary configuration directories.
 
-LocalFlow can be configured through:
-- Configuration file (`~/.localflow/config.yaml`)
-- Environment variables
-- Command-line options
+## Quick Start
 
-Example configuration:
+1. Create a workflow file in your project's `.localflow` directory:
+
 ```yaml
-workflows_dir: "~/.localflow/workflows"
-log_dir: "~/.localflow/logs"
-log_level: "INFO"
-docker_enabled: false
-docker_default_image: "ubuntu:latest"
-show_output: true
-default_shell: "/bin/bash"
+id: wf_example
+name: Example Workflow
+description: A simple example workflow
+version: 1.0.0
+author: Your Name
+tags: [example]
+
+jobs:
+  setup:
+    id: job_setup
+    description: Setup environment
+    tags: [setup]
+    steps:
+      - name: Setup
+        run: echo "Setting up environment"
+
+  test:
+    id: job_test
+    description: Run tests
+    tags: [test]
+    condition:
+      if: job_setup
+    steps:
+      - name: Test
+        run: echo "Running tests"
 ```
 
-## Basic Usage
-
-LocalFlow provides several commands for managing and executing workflows:
+2. Run your workflow:
 
 ```bash
 # List available workflows
 localflow list
 
-# Show jobs in a workflow
-localflow jobs workflow.yml
+# View workflow jobs
+localflow jobs wf_example
 
 # Run entire workflow
-localflow run workflow.yml
+localflow run wf_example
 
 # Run specific job
-localflow run workflow.yml --job job_name
-
-# Run with Docker
-localflow run workflow.yml --docker
-
-# Show configuration
-localflow config
+localflow run wf_example --job job_test
 ```
 
-See [USAGE.md](USAGE.md) for detailed usage instructions and advanced features.
-
-## Directory Structure
-
-After installation, LocalFlow creates the following structure:
+## Project Structure
 
 ```
-~/.localflow/
-├── config.yaml       # Configuration file
-├── workflows/        # Workflow definitions
-└── logs/            # Execution logs
+localflow/
+├── install-script.py      # Installation script
+├── LICENSE               # MIT License
+├── localflow            # Command-line entry point
+├── localflow.py         # Main implementation
+├── schema.py            # Schema definitions
+├── README.md            # This file
+├── requirements.txt     # Dependencies
+└── USAGE.md            # Detailed usage guide
 ```
+
+## Configuration
+
+LocalFlow can be configured through:
+
+1. Global configuration file (~/.localflow/config.yaml)
+2. Environment variables
+3. Command-line options
+
+The configuration supports:
+
+- Workflow directory locations
+- Docker settings
+- Output handling preferences
+- Logging settings
+
+## Workflow Organization
+
+LocalFlow supports two locations for workflows:
+
+1. Project-specific: `.localflow` directory in your project
+2. Global: `~/.localflow/workflows` directory
+
+Project-specific workflows take precedence over global ones with the same name.
 
 ## Contributing
 
-We welcome contributions! Please see our contributing guidelines for details on:
-- Code style and standards
-- Testing requirements
-- Pull request process
-- Development setup
-
-## Troubleshooting
-
-If you encounter issues:
-
-1. Enable debug mode: `localflow --debug ...`
-2. Check logs in `~/.localflow/logs/`
-3. Verify configuration: `localflow config`
-4. See [USAGE.md](USAGE.md) for troubleshooting guide
+Contributions are welcome! Just submit a pull request.
 
 ## License
 
-LocalFlow is released under the MIT License. See LICENSE file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+LocalFlow is inspired by GitHub Actions and aims to provide similar functionality for local development environments.
