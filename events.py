@@ -125,6 +125,10 @@ class EventRegistry:
         self.logger = logging.getLogger("LocalFlow.EventRegistry")
         self._registrations: Dict[str, EventRegistration] = {}
         self._db_file = config.log_dir / "events.db"
+
+        # Ensure PID file directory exists
+        self.config.monitor_pid_file.parent.mkdir(parents=True, exist_ok=True)
+
         self.logger.info(f"Initializing EventRegistry with database: {self._db_file}")
         self._load_registrations()
     
@@ -323,22 +327,34 @@ class LocalFlowEventHandler(FileSystemEventHandler):
                         f"on {file_info['path']}"
                     )
                     
-                    workflow = self.workflow_registry.get_workflow(reg.workflow_id)
-                    if workflow:
+                    # Use workflow registry to find workflow
+                    workflows = self.workflow_registry.find_workflows()
+                    matching_workflow = None
+                    
+                    # Check both ID and name
+                    for wf in workflows:
+                        if (wf.id == reg.workflow_id or
+                            wf.name.lower().replace(" ", "_") == reg.workflow_id):
+                            matching_workflow = wf
+                            break
+                    
+                    if matching_workflow:
                         try:
-                            executor = WorkflowExecutor(workflow.source, self.config)
+                            executor = WorkflowExecutor(
+                                matching_workflow.source, 
+                                self.config
+                            )
                             if reg.job_ids:
                                 for job_id in reg.job_ids:
                                     executor.execute_job(job_id)
                             else:
                                 executor.run()
                             
-                            # Record successful trigger
                             self.event_registry.record_trigger(reg.id)
                             
                         except Exception as e:
                             self.logger.error(
-                                f"Error executing workflow {workflow.id}: {e}"
+                                f"Error executing workflow {matching_workflow.id}: {e}"
                             )
                     else:
                         self.logger.error(

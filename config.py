@@ -4,9 +4,14 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-
+from enum import Enum
 import yaml
 
+class OutputMode(Enum):
+    """Output modes for workflow execution"""
+    STDOUT = "stdout"
+    FILE = "file" 
+    BOTH = "both"
 
 @dataclass
 class OutputConfig:

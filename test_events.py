@@ -10,8 +10,8 @@ import pytest
 import yaml
 
 from config import Config
-from events import EventMonitor, LocalFlowEventHandler
-from schema import Event, EventTrigger, Workflow
+from events import EventMonitor, EventRegistry, EventTrigger, LocalFlowEventHandler
+from schema import Workflow
 
 
 @pytest.fixture

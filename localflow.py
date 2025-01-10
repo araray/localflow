@@ -860,6 +860,54 @@ def daemon_cleanup(config: Config):
         pass
     sys.exit(0)
 
+@cli.group()
+def daemon():
+    """Manage LocalFlow daemon process"""
+    pass
+
+@daemon.command()
+def start():
+    """Start LocalFlow daemon"""
+    try:
+        service = LocalFlowMonitorService()
+        service.run()
+        click.echo("LocalFlow daemon started successfully")
+    except Exception as e:
+        click.echo(f"Failed to start daemon: {e}", err=True)
+        sys.exit(1)
+
+@daemon.command()
+def stop():
+    """Stop LocalFlow daemon"""
+    try:
+        # Read PID and send SIGTERM
+        with open(Config.get_defaults().monitor_pid_file) as f:
+            pid = int(f.read().strip())
+            os.kill(pid, signal.SIGTERM)
+        click.echo("LocalFlow daemon stopped")
+    except Exception as e:
+        click.echo(f"Failed to stop daemon: {e}", err=True)
+        sys.exit(1)
+
+@daemon.command()
+def status():
+    """Check LocalFlow daemon status"""
+    try:
+        pid_file = Config.get_defaults().monitor_pid_file
+        if not pid_file.exists():
+            click.echo("LocalFlow daemon is not running")
+            return
+        
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+            try:
+                os.kill(pid, 0)  # Check if process exists
+                click.echo(f"LocalFlow daemon is running (PID: {pid})")
+            except OSError:
+                click.echo("LocalFlow daemon is not running (stale PID file)")
+    except Exception as e:
+        click.echo(f"Failed to check daemon status: {e}", err=True)
+
 def tail(f, lines=1):
     """Read last N lines from file"""
     total_lines_wanted = lines
