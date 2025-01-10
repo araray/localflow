@@ -1,10 +1,10 @@
 
 import logging
 import sys
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from config import Config, OutputConfig
+from config import OutputConfig
+
 
 
 class OutputHandler:

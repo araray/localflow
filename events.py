@@ -7,18 +7,16 @@ import grp
 import logging
 import os
 import pwd
-import time
-from pathlib import Path
-from typing import Dict, List, Optional, Set
 
-import psutil
+from typing import Dict, Set
+
 from watchdog.events import (FileCreatedEvent, FileDeletedEvent,
                              FileModifiedEvent, FileSystemEventHandler)
 from watchdog.observers import Observer
 
 from config import Config
 from executor import WorkflowExecutor
-from schema import Event, EventTrigger, Workflow
+
 
 
 class LocalFlowEventHandler(FileSystemEventHandler):

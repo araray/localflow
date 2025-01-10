@@ -1,4 +1,3 @@
-# File: monitor_service.py
 """
 LocalFlow monitoring service for event-based workflow triggering.
 """

@@ -13,28 +13,27 @@ Key features:
 
 import logging
 import os
-import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Optional
 
 import click
-import docker
 import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
+import psutil
 
 from config import Config, OutputConfig
 from executor import DockerExecutor, WorkflowExecutor
 from monitor_service import LocalFlowMonitorService
-from schema import Job, Workflow, WorkflowRegistry
-from utils import OutputHandler
+from schema import WorkflowRegistry
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -540,7 +539,7 @@ def event_status(config: Config):
     try:
         if not config.monitor_pid_file.exists():
             console.print("[yellow]Event monitor is not running[/yellow]")
-            return
+            return 
 
         with open(pid_file) as f:
             pid = int(f.read().strip())
@@ -628,7 +627,7 @@ def start_monitor(config: Config, foreground: bool):
             
             if config.monitor_pid_file.exists():
                 console.print("[yellow]Event monitor is already running[/yellow]")
-                return
+                return 
                 
             service = LocalFlowMonitorService(
                 config_path=str(config.config_file) if config.config_file else None
@@ -670,13 +669,13 @@ def stop_monitor():
     try:
         if not config.monitor_pid_file.exists():
             console.print("[yellow]Event monitor is not running[/yellow]")
-            return
+            return 
             
         try:
-            with open(pid_file) as f:
+            with open(str(config.monitor_pid_file)) as f:
                 pid = int(f.read().strip())
             os.kill(pid, signal.SIGTERM)
-            
+            import signal            
             # Wait for process to stop
             time.sleep(1)
             if not pid_file.exists():
