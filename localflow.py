@@ -13,6 +13,7 @@ Key features:
 
 import logging
 import os
+import signal
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -24,6 +25,8 @@ from typing import Optional
 import click
 import psutil
 import yaml
+from daemon import DaemonContext
+from daemon.pidfile import PIDLockFile
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -31,44 +34,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from config import Config, OutputConfig
+from events import EventRegistry
 from executor import DockerExecutor, WorkflowExecutor
 from monitor_service import LocalFlowMonitorService
 from schema import WorkflowRegistry
 
 # Initialize Rich console for beautiful output
 console = Console()
-
-
-def list_files_in_folder(folder_name, extensions):
-    """
-    Checks if a folder exists in the current directory and lists files with specific extensions.
-
-    Parameters:
-    - folder_name (str): The name of the folder to check for.
-    - extensions (tuple): A tuple of file extensions (e.g., ('.txt', '.jpg')) to filter files by.
-
-    Returns:
-    - list: A list of file names with the specified extensions if the folder exists.
-    - None: If the folder does not exist.
-    """
-    try:
-        # Check if the folder exists in the current directory
-        if os.path.isdir(folder_name):
-            # Get all files in the folder with the specified extensions
-            files = [
-                file
-                for file in os.listdir(folder_name)
-                if file.endswith(extensions)
-                and os.path.isfile(os.path.join(folder_name, file))
-            ]
-            return files
-        else:
-            return None  # Return None if the folder does not exist
-    except Exception as e:
-        # Log the error or handle it appropriately without interrupting the program flow
-        print(f"An error occurred: {e}")
-        return None
-
 
 class OutputMode(str, Enum):
     """Output modes for workflow execution"""
@@ -201,15 +173,52 @@ def resolve_workflow_path(
     )
 
 
-def resolve_config_path(config_path: Optional[str]) -> Optional[Path]:
-    """Resolve configuration file path with environment variable support."""
+def resolve_config_path(config_path: Optional[str] = None) -> Path:
+    """
+    Resolve configuration file path.
+    
+    Args:
+        config_path: Optional explicit path to config file
+        
+    Returns:
+        Path to configuration file
+    """
+    # Try environment variable first
     if not config_path:
         config_path = os.environ.get("LOCALFLOW_CONFIG")
+    
+    # Then try default locations
+    if not config_path:
+        candidates = [
+            Path("config.yml"),  # Current directory
+            Path("~/.localflow/config.yml"),  # User home
+            Path("/etc/localflow/config.yml"),  # System-wide
+        ]
+        
+        for path in candidates:
+            path = path.expanduser().resolve()
+            if path.exists():
+                return path
+    else:
+        path = Path(config_path).expanduser().resolve()
+        if path.exists():
+            return path
+            
+    # If no config found, use default in current directory
+    return Path("config.yml").resolve()
 
-    if config_path:
-        return Path(os.path.expanduser(config_path)).resolve()
-    return None
-
+def load_config(config_path: Optional[str] = None) -> Config:
+    """
+    Load configuration from file.
+    
+    Args:
+        config_path: Optional explicit path to config file
+        
+    Returns:
+        Loaded configuration
+    """
+    path = resolve_config_path(config_path)
+    return Config.load_from_file(path)
 
 @click.group()
 @click.option(
@@ -564,71 +573,81 @@ def list_events(config: Config):
         if config.log_level == "DEBUG":
             console.print_exception()
 
+@events.command()
+@click.option("--config", help="Path to config file")
+def status(config: Optional[str] = None):
+    """Show status of registered events."""
+    config = load_config(config)
+    event_registry = EventRegistry(config)
+    
+    registrations = event_registry.list_registrations()
+    
+    if not registrations:
+        click.echo("No events registered")
+        return
+        
+    table = Table(title="Event Registrations")
+    table.add_column("ID")
+    table.add_column("Workflow")
+    table.add_column("Type")
+    table.add_column("Status")
+    table.add_column("Source")
+    table.add_column("Last Triggered")
+    
+    for reg in registrations:
+        table.add_row(
+            reg.id,
+            reg.workflow_id,
+            reg.event_type,
+            "Enabled" if reg.enabled else "Disabled",
+            reg.source,
+            reg.last_triggered.strftime("%Y-%m-%d %H:%M:%S")
+            if reg.last_triggered else "Never"
+        )
+    
+    console = Console()
+    console.print(table)
 
-@events.command("status")
-@click.pass_obj
-def event_status(config: Config):
-    """Show event monitoring status"""
-    try:
-        if not config.monitor_pid_file.exists():
-            console.print("[yellow]Event monitor is not running[/yellow]")
-            return
+@events.command()
+@click.argument("event_id")
+@click.option("--config", help="Path to config file")
+def enable(event_id: str, config: Optional[str] = None):
+    """Enable an event."""
+    config = load_config(config)
+    event_registry = EventRegistry(config)
+    
+    if event_registry.enable_event(event_id):
+        click.echo(f"Enabled event {event_id}")
+    else:
+        click.echo(f"Event {event_id} not found", err=True)
 
-        with open(pid_file) as f:
-            pid = int(f.read().strip())
+@events.command()
+@click.argument("event_id")
+@click.option("--config", help="Path to config file")
+def disable(event_id: str, config: Optional[str] = None):
+    """Disable an event."""
+    config = load_config(config)
+    event_registry = EventRegistry(config)
+    
+    if event_registry.disable_event(event_id):
+        click.echo(f"Disabled event {event_id}")
+    else:
+        click.echo(f"Event {event_id} not found", err=True)
 
-        try:
-            process = psutil.Process(pid)
-            status = "Running" if process.is_running() else "Stopped"
-            cpu_percent = process.cpu_percent()
-            memory_info = process.memory_info()
 
-            # Create status table
-            table = Table(title="Event Monitor Status")
-            table.add_column("Attribute", style="bold blue")
-            table.add_column("Value")
-
-            table.add_row("Status", f"[green]{status}[/green]")
-            table.add_row("PID", str(pid))
-            table.add_row("CPU Usage", f"{cpu_percent}%")
-            table.add_row("Memory Usage", f"{memory_info.rss / 1024 / 1024:.2f} MB")
-            table.add_row(
-                "Start Time",
-                time.strftime(
-                    "%Y-%m-%d %H:%M:%S", time.localtime(process.create_time())
-                ),
-            )
-
-            console.print(table)
-
-            # Show active watches
-            registry = WorkflowRegistry()
-            registry.discover_workflows(
-                config.workflows_dir, config.local_workflows_dir
-            )
-            monitor = EventMonitor(config, registry)
-            monitor.setup_watches()
-
-            watch_table = Table(title="Active Watches")
-            watch_table.add_column("Path", style="blue")
-            watch_table.add_column("Recursive")
-
-            for path, recursive_set in monitor.watch_paths.items():
-                watch_table.add_row(str(path), "✓" if any(recursive_set) else "✗")
-
-            console.print("\n")
-            console.print(watch_table)
-
-        except psutil.NoSuchProcess:
-            console.print("[yellow]Event monitor process not found[/yellow]")
-            if pid_file.exists():
-                pid_file.unlink()
-
-    except Exception as e:
-        console.print(f"[red]Error checking monitor status: {e}[/red]")
-        if config.log_level == "DEBUG":
-            console.print_exception()
-
+@events.command()
+@click.argument("workflow_id")
+@click.option("--config", help="Path to config file")
+def unregister(workflow_id: str, config: Optional[str] = None):
+    """Unregister all events for a workflow."""
+    config = load_config(config)
+    event_registry = EventRegistry(config)
+    
+    unregistered = event_registry.unregister_events(workflow_id)
+    if unregistered:
+        click.echo(f"Unregistered {len(unregistered)} events for workflow {workflow_id}")
+    else:
+        click.echo(f"No events found for workflow {workflow_id}")
 
 @events.command("start")
 @click.pass_obj
@@ -636,6 +655,19 @@ def event_status(config: Config):
 def start_monitor(config: Config, foreground: bool):
     """Start event monitoring"""
     try:
+        # Check if already running
+        if config.monitor_pid_file.exists():
+            try:
+                with open(config.monitor_pid_file) as f:
+                    pid = int(f.read().strip())
+                process = psutil.Process(pid)
+                if process.is_running():
+                    console.print("[yellow]Event monitor is already running[/yellow]")
+                    return
+                config.monitor_pid_file.unlink()
+            except (ProcessLookupError, ValueError, FileNotFoundError):
+                config.monitor_pid_file.unlink()
+
         if foreground:
             # Run directly (no daemon)
             registry = WorkflowRegistry()
@@ -658,26 +690,32 @@ def start_monitor(config: Config, foreground: bool):
             from daemon import DaemonContext
             from daemon.pidfile import PIDLockFile
 
-            if config.monitor_pid_file.exists():
-                console.print("[yellow]Event monitor is already running[/yellow]")
-                return
-
-            service = LocalFlowMonitorService(
-                config_path=str(config.config_file) if config.config_file else None
-            )
-
-            # Ensure pid file directory exists
+            # Ensure directories exist
             config.monitor_pid_file.parent.mkdir(parents=True, exist_ok=True)
+            config.log_dir.mkdir(parents=True, exist_ok=True)
+
+            # Setup log file
+            log_file = config.log_dir / config.monitor_log_file
+            console_log = open(log_file, 'a+')
 
             context = DaemonContext(
                 pidfile=PIDLockFile(str(config.monitor_pid_file)),
                 working_directory="/",
+                stdout=console_log,
+                stderr=console_log,
                 umask=0o002,
                 detach_process=True,
+                signal_map={
+                    signal.SIGTERM: lambda signo, frame: daemon_cleanup(config),
+                    signal.SIGINT: lambda signo, frame: daemon_cleanup(config),
+                }
             )
 
             try:
                 with context:
+                    service = LocalFlowMonitorService(
+                        config_path=str(config.config_file) if config.config_file else None
+                    )
                     service.run()
 
                 # Wait a bit to check if daemon started successfully
@@ -696,9 +734,9 @@ def start_monitor(config: Config, foreground: bool):
         if config.log_level == "DEBUG":
             console.print_exception()
 
-
 @events.command("stop")
-def stop_monitor():
+@click.pass_obj
+def stop_monitor(config: Config):
     """Stop event monitoring daemon"""
     try:
         if not config.monitor_pid_file.exists():
@@ -706,22 +744,27 @@ def stop_monitor():
             return
 
         try:
-            with open(str(config.monitor_pid_file)) as f:
+            with open(config.monitor_pid_file) as f:
                 pid = int(f.read().strip())
-            os.kill(pid, signal.SIGTERM)
-            import signal
 
+            process = psutil.Process(pid)
+            process.terminate()
+            
             # Wait for process to stop
-            time.sleep(1)
-            if not pid_file.exists():
-                console.print("[green]Event monitor stopped[/green]")
-            else:
-                console.print("[yellow]Event monitor did not stop gracefully[/yellow]")
-                pid_file.unlink()
-        except (ProcessLookupError, FileNotFoundError):
+            try:
+                process.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                process.kill()  # Force kill if not responding
+                process.wait()
+                
+            if config.monitor_pid_file.exists():
+                config.monitor_pid_file.unlink()
+            console.print("[green]Event monitor stopped[/green]")
+                
+        except (ProcessLookupError, FileNotFoundError, ValueError):
             console.print("[yellow]Event monitor process not found[/yellow]")
-            if pid_file.exists():
-                pid_file.unlink()
+            if config.monitor_pid_file.exists():
+                config.monitor_pid_file.unlink()
         except Exception as e:
             console.print(f"[red]Error stopping monitor: {e}[/red]")
 
@@ -729,7 +772,6 @@ def stop_monitor():
         console.print(f"[red]Error stopping monitor: {e}[/red]")
         if config.log_level == "DEBUG":
             console.print_exception()
-
 
 @events.command("logs")
 @click.pass_obj
@@ -775,6 +817,48 @@ def show_logs(config: Config, follow: bool, lines: int):
         if config.log_level == "DEBUG":
             console.print_exception()
 
+@events.command("register")
+@click.option("--local", is_flag=True, help="Register events from local workflows only")
+@click.option("--global", "global_", is_flag=True, help="Register events from global workflows only")
+@click.option("--config", help="Path to config file")
+def register_events(local: bool, global_: bool, config: Optional[str] = None):
+    """Register events from workflows."""
+    config = load_config(config)
+    registry = WorkflowRegistry()
+    event_registry = EventRegistry(config)
+    
+    if not local and not global_:
+        local = global_ = True
+    
+    registered = []
+    
+    if local:
+        registry.discover_workflows(config.local_workflows_dir)
+        for workflow in registry.workflows.values():
+            if workflow.events:
+                reg_ids = event_registry.register_events(workflow, "local")
+                registered.extend(reg_ids)
+    
+    if global_:
+        registry.discover_workflows(config.workflows_dir)
+        for workflow in registry.workflows.values():
+            if workflow.events:
+                reg_ids = event_registry.register_events(workflow, "global")
+                registered.extend(reg_ids)
+                
+    if registered:
+        click.echo(f"Registered {len(registered)} events")
+    else:
+        click.echo("No new events registered")
+
+def daemon_cleanup(config: Config):
+    """Clean up daemon resources before exit"""
+    try:
+        if config.monitor_pid_file.exists():
+            config.monitor_pid_file.unlink()
+    except Exception:
+        pass
+    sys.exit(0)
 
 def tail(f, lines=1):
     """Read last N lines from file"""

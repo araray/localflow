@@ -70,8 +70,6 @@ class Config:
                         config_data = loaded_data
 
             # Get monitor settings from config
-            for conf in config_data:  # AV_DEBUG
-                print(conf)
             monitor_config = config_data.get("monitor", {})
             monitor_pid_file = Path(
                 os.path.expanduser(

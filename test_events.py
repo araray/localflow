@@ -195,6 +195,63 @@ def test_daemon_pidfile_handling():
         # Test PID file cleanup
         assert not os.path.exists(pid_file.name)
 
+def test_event_registration(config, event_workflow):
+    """Test event registration functionality."""
+    event_registry = EventRegistry(config)
+    
+    # Test registration
+    reg_ids = event_registry.register_events(event_workflow, "local")
+    assert len(reg_ids) == 1
+    
+    # Test listing
+    regs = event_registry.list_registrations()
+    assert len(regs) == 1
+    assert regs[0].workflow_id == event_workflow.id
+    
+    # Test enable/disable
+    reg_id = reg_ids[0]
+    assert event_registry.disable_event(reg_id)
+    reg = event_registry.get_registration(reg_id)
+    assert not reg.enabled
+    
+    assert event_registry.enable_event(reg_id)
+    reg = event_registry.get_registration(reg_id)
+    assert reg.enabled
+    
+    # Test unregistration
+    unreg_ids = event_registry.unregister_events(event_workflow.id)
+    assert len(unreg_ids) == 1
+    assert not event_registry.list_registrations()
+
+def test_event_persistence(config, event_workflow):
+    """Test event registration persistence."""
+    event_registry = EventRegistry(config)
+    
+    # Register events
+    reg_ids = event_registry.register_events(event_workflow, "local")
+    assert len(reg_ids) == 1
+    
+    # Create new registry instance
+    new_registry = EventRegistry(config)
+    
+    # Verify registrations loaded
+    regs = new_registry.list_registrations()
+    assert len(regs) == 1
+    assert regs[0].workflow_id == event_workflow.id
+
+def test_event_trigger_recording(config, event_workflow):
+    """Test recording of event triggers."""
+    event_registry = EventRegistry(config)
+    reg_ids = event_registry.register_events(event_workflow, "local")
+    
+    reg_id = reg_ids[0]
+    reg = event_registry.get_registration(reg_id)
+    assert reg.last_triggered is None
+    
+    event_registry.record_trigger(reg_id)
+    reg = event_registry.get_registration(reg_id)
+    assert reg.last_triggered is not None
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
