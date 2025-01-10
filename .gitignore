@@ -12,6 +12,7 @@ old-docs/
 .localflow/
 config.yml
 config.yaml
+poetry.lock
 
 # Distribution / packaging
 .Python

@@ -9,10 +9,12 @@ import os
 import yaml
 from click.testing import CliRunner
 
-from localflow import (
-    Config, WorkflowExecutor, OutputConfig, OutputMode, OutputHandler,
-    resolve_workflow_path, cli
-)
+from localflow.config import Config, OutputConfig, OutputMode, OutputHandler
+from localflow.executor import WorkflowExecutor, resolve_workflow_path
+from localflow.cli import cli
+
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Provide a temporary directory for test files."""
