@@ -3,25 +3,23 @@ Event monitoring and handling for LocalFlow.
 Provides file system event monitoring and workflow triggering functionality.
 """
 
+import grp
 import logging
 import os
+import pwd
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-import psutil
-import pwd
-import grp
-from watchdog.observers import Observer
-from watchdog.events import (
-    FileSystemEventHandler,
-    FileModifiedEvent,
-    FileCreatedEvent,
-    FileDeletedEvent
-)
 
-from schema import Workflow, Event, EventTrigger
-from executor import WorkflowExecutor
+import psutil
+from watchdog.events import (FileCreatedEvent, FileDeletedEvent,
+                             FileModifiedEvent, FileSystemEventHandler)
+from watchdog.observers import Observer
+
 from config import Config
+from executor import WorkflowExecutor
+from schema import Event, EventTrigger, Workflow
+
 
 class LocalFlowEventHandler(FileSystemEventHandler):
     """Handle file system events and trigger workflows."""

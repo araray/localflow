@@ -8,9 +8,11 @@ import logging
 import signal
 import time
 from typing import Optional
+
 from config import Config
-from schema import WorkflowRegistry
 from events import EventMonitor
+from schema import WorkflowRegistry
+
 
 class LocalFlowMonitorService:
     """Monitor service for LocalFlow event monitoring."""

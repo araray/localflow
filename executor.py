@@ -3,13 +3,14 @@
 import logging
 import os
 import subprocess
-from typing import Dict, Optional, Set
-import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from dataclasses import asdict, dataclass, field
+from typing import Dict, Optional, Set
+
 from config import Config, OutputConfig
-from schema import Workflow, Job
+from schema import Job, Workflow
 from utils import OutputHandler
+
 
 @dataclass
 class DockerExecutor:

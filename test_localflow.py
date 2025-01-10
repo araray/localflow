@@ -1,18 +1,19 @@
 """Unit tests for LocalFlow implementation."""
 
+import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Generator
-import logging
+
 import pytest
-import os
 import yaml
 from click.testing import CliRunner
 
-from localflow import (
-    Config, WorkflowExecutor, OutputConfig, OutputMode, OutputHandler,
-    resolve_workflow_path, cli
-)
+from localflow import (Config, OutputConfig, OutputHandler, OutputMode,
+                       WorkflowExecutor, cli, resolve_workflow_path)
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Provide a temporary directory for test files."""

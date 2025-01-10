@@ -4,13 +4,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Generator
+
 import pytest
 import yaml
 
-from schema import (
-    Condition, Job, Workflow, WorkflowRegistry,
-    generate_id
-)
+from schema import Condition, Job, Workflow, WorkflowRegistry, generate_id
+
 
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:

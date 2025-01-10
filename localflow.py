@@ -13,8 +13,8 @@ Key features:
 
 import logging
 import os
-import sys
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -26,14 +26,14 @@ import docker
 import yaml
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-from rich.panel import Panel
 
 from config import Config, OutputConfig
-from schema import WorkflowRegistry, Workflow, Job
-from executor import WorkflowExecutor, DockerExecutor
+from executor import DockerExecutor, WorkflowExecutor
 from monitor_service import LocalFlowMonitorService
+from schema import Job, Workflow, WorkflowRegistry
 from utils import OutputHandler
 
 # Initialize Rich console for beautiful output

@@ -1,8 +1,8 @@
 """LocalFlow package."""
 
 from config import Config, OutputConfig
-from executor import WorkflowExecutor, DockerExecutor
 from events import EventMonitor
+from executor import DockerExecutor, WorkflowExecutor
 from monitor_service import LocalFlowMonitorService
 from utils import OutputHandler
 

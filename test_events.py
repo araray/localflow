@@ -4,12 +4,14 @@ import os
 import tempfile
 import time
 from pathlib import Path
-import pytest
-import yaml
 from unittest.mock import MagicMock, patch
 
+import pytest
+import yaml
+
 from events import EventMonitor, LocalFlowEventHandler
-from schema import Workflow, Event, EventTrigger
+from schema import Event, EventTrigger, Workflow
+
 from localflow import
 
 

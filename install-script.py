@@ -7,15 +7,16 @@ setting up directories, configuration, and environment variables.
 """
 
 import os
-import sys
 import shutil
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 import yaml
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
 
 console = Console()
 
