@@ -38,6 +38,7 @@ from schema import WorkflowRegistry
 # Initialize Rich console for beautiful output
 console = Console()
 
+
 def list_files_in_folder(folder_name, extensions):
     """
     Checks if a folder exists in the current directory and lists files with specific extensions.
@@ -55,8 +56,10 @@ def list_files_in_folder(folder_name, extensions):
         if os.path.isdir(folder_name):
             # Get all files in the folder with the specified extensions
             files = [
-                file for file in os.listdir(folder_name)
-                if file.endswith(extensions) and os.path.isfile(os.path.join(folder_name, file))
+                file
+                for file in os.listdir(folder_name)
+                if file.endswith(extensions)
+                and os.path.isfile(os.path.join(folder_name, file))
             ]
             return files
         else:
@@ -69,42 +72,53 @@ def list_files_in_folder(folder_name, extensions):
 
 class OutputMode(str, Enum):
     """Output modes for workflow execution"""
-    STDOUT = "stdout"    # Output only to stdout
-    FILE = "file"       # Output only to file
-    BOTH = "both"       # Output to both stdout and file
+
+    STDOUT = "stdout"  # Output only to stdout
+    FILE = "file"  # Output only to file
+    BOTH = "both"  # Output to both stdout and file
+
 
 @dataclass
 class OutputConfig:
     """Configuration for workflow output handling"""
+
     file: Optional[Path] = None
     mode: OutputMode = OutputMode.STDOUT
     stdout: bool = True
     append: bool = False
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'OutputConfig':
+    def from_dict(cls, data: dict) -> "OutputConfig":
         """Create OutputConfig from dictionary (usually from YAML)"""
         if not data:
             return cls()
 
         return cls(
-            file=Path(os.path.expanduser(data.get('file', ''))).resolve() if data.get('file') else None,
-            mode=OutputMode(data.get('mode', 'stdout')),
-            stdout=data.get('stdout', True),
-            append=data.get('append', False)
+            file=(
+                Path(os.path.expanduser(data.get("file", ""))).resolve()
+                if data.get("file")
+                else None
+            ),
+            mode=OutputMode(data.get("mode", "stdout")),
+            stdout=data.get("stdout", True),
+            append=data.get("append", False),
         )
 
-    def merge_with_cli(self, output_file: Optional[str], output_mode: str, append: bool) -> 'OutputConfig':
+    def merge_with_cli(
+        self, output_file: Optional[str], output_mode: str, append: bool
+    ) -> "OutputConfig":
         """Merge this config with CLI options, giving precedence to CLI"""
         return OutputConfig(
             file=Path(output_file).resolve() if output_file else self.file,
             mode=OutputMode(output_mode) if output_mode else self.mode,
             stdout=self.stdout,
-            append=append if append is not None else self.append
+            append=append if append is not None else self.append,
         )
+
 
 class LocalFlowLogger:
     """Custom logger for LocalFlow with rich output support."""
+
     def __init__(self, config: Config, workflow_name: str):
         self.config = config
         self.workflow_name = workflow_name
@@ -113,22 +127,22 @@ class LocalFlowLogger:
 
     def _setup_log_file(self) -> Path:
         """Setup log file with timestamp."""
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.config.log_dir / f"{self.workflow_name}_{timestamp}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         return log_file
 
     def _setup_logger(self) -> logging.Logger:
         """Setup logger with both file and console handlers."""
-        logger = logging.getLogger(f'LocalFlow.{self.workflow_name}')
+        logger = logging.getLogger(f"LocalFlow.{self.workflow_name}")
         logger.setLevel(self.config.log_level)
         logger.handlers = []  # Clear any existing handlers
 
         # File handler
         file_handler = logging.FileHandler(self.log_file)
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
         logger.addHandler(file_handler)
 
         # Console handler (using Rich)
@@ -139,7 +153,9 @@ class LocalFlowLogger:
         return logger
 
 
-def resolve_workflow_path(workflows_dir: Path, workflow_id: str, local_dir: Optional[Path] = None) -> Path:
+def resolve_workflow_path(
+    workflows_dir: Path, workflow_id: str, local_dir: Optional[Path] = None
+) -> Path:
     """
     Resolve workflow path from ID, checking both local and global directories.
 
@@ -154,22 +170,23 @@ def resolve_workflow_path(workflows_dir: Path, workflow_id: str, local_dir: Opti
     Raises:
         FileNotFoundError: If workflow cannot be found
     """
+
     def find_workflow_in_dir(directory: Path) -> Optional[Path]:
         """Helper to find workflow in a directory."""
         if directory.exists():
-            for ext in ['.yml', '.yaml']:
-                for path in directory.glob(f'*{ext}'):
+            for ext in [".yml", ".yaml"]:
+                for path in directory.glob(f"*{ext}"):
                     try:
                         with open(path) as f:
                             data = yaml.safe_load(f)
-                            if data and data.get('id') == workflow_id:
+                            if data and data.get("id") == workflow_id:
                                 return path.resolve()
                     except Exception:
                         continue
         return None
 
     # First check local directory (prioritize local_dir parameter if provided)
-    search_local_dir = local_dir if local_dir else Path('.localflow')
+    search_local_dir = local_dir if local_dir else Path(".localflow")
     if local_path := find_workflow_in_dir(search_local_dir):
         return local_path
 
@@ -183,21 +200,27 @@ def resolve_workflow_path(workflows_dir: Path, workflow_id: str, local_dir: Opti
         f"Available workflows can be listed using 'localflow list'"
     )
 
+
 def resolve_config_path(config_path: Optional[str]) -> Optional[Path]:
     """Resolve configuration file path with environment variable support."""
     if not config_path:
-        config_path = os.environ.get('LOCALFLOW_CONFIG')
+        config_path = os.environ.get("LOCALFLOW_CONFIG")
 
     if config_path:
         return Path(os.path.expanduser(config_path)).resolve()
     return None
 
+
 @click.group()
-@click.option('--config', '-c', type=click.Path(exists=True),
-              help='Path to configuration file',
-              default=lambda: os.environ.get('LOCALFLOW_CONFIG'))
-@click.option('--debug/--no-debug', default=False, help='Enable debug mode')
-@click.option('--quiet/--no-quiet', default=False, help='Suppress console output')
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True),
+    help="Path to configuration file",
+    default=lambda: os.environ.get("LOCALFLOW_CONFIG"),
+)
+@click.option("--debug/--no-debug", default=False, help="Enable debug mode")
+@click.option("--quiet/--no-quiet", default=False, help="Suppress console output")
 @click.pass_context
 def cli(ctx, config, debug, quiet):
     """LocalFlow - A local workflow executor"""
@@ -211,7 +234,7 @@ def cli(ctx, config, debug, quiet):
 
         # Override configuration based on CLI options
         if debug:
-            cfg.log_level = 'DEBUG'
+            cfg.log_level = "DEBUG"
         if quiet:
             cfg.show_output = False
 
@@ -225,25 +248,35 @@ def cli(ctx, config, debug, quiet):
         console.print(f"[red]Error initializing LocalFlow: {e}[/red]")
         sys.exit(1)
 
+
 @cli.command()
 @click.pass_obj
-@click.argument('workflow')
-@click.option('--job', '-j', help='Specific job to run')
-@click.option('--docker/--no-docker', help='Override Docker setting')
-@click.option('--output', '-o', type=click.Path(), help='Output file path')
-@click.option('--output-mode',
-              type=click.Choice(['stdout', 'file', 'both']),
-              help='Output destination mode')
-@click.option('--append/--no-append', help='Append to output file instead of overwriting')
-def run(config: Config, workflow: str, job: str, docker: bool,
-        output: Optional[str], output_mode: str, append: bool):
+@click.argument("workflow")
+@click.option("--job", "-j", help="Specific job to run")
+@click.option("--docker/--no-docker", help="Override Docker setting")
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option(
+    "--output-mode",
+    type=click.Choice(["stdout", "file", "both"]),
+    help="Output destination mode",
+)
+@click.option(
+    "--append/--no-append", help="Append to output file instead of overwriting"
+)
+def run(
+    config: Config,
+    workflow: str,
+    job: str,
+    docker: bool,
+    output: Optional[str],
+    output_mode: str,
+    append: bool,
+):
     """Run a workflow file or specific job with output handling"""
     try:
         # Pass local_workflows_dir from config
         workflow_path = resolve_workflow_path(
-            config.workflows_dir,
-            workflow,
-            local_dir=config.local_workflows_dir
+            config.workflows_dir, workflow, local_dir=config.local_workflows_dir
         )
         if docker is not None:
             config.docker_enabled = docker
@@ -259,12 +292,10 @@ def run(config: Config, workflow: str, job: str, docker: bool,
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            console=console
+            console=console,
         ) as progress:
             task_desc = f"Running job '{job}' from" if job else "Running"
-            task = progress.add_task(
-                f"{task_desc} workflow: {workflow_path.name}"
-            )
+            task = progress.add_task(f"{task_desc} workflow: {workflow_path.name}")
 
             if job:
                 success = executor.execute_job(job)
@@ -282,6 +313,7 @@ def run(config: Config, workflow: str, job: str, docker: bool,
             console.print_exception()
         sys.exit(1)
 
+
 @cli.command()
 @click.pass_obj
 def list(config: Config):
@@ -291,15 +323,14 @@ def list(config: Config):
         registry = WorkflowRegistry()
 
         # Discover workflows from both global and local directories
-        registry.discover_workflows(
-            config.workflows_dir,
-            config.local_workflows_dir
-        )
+        registry.discover_workflows(config.workflows_dir, config.local_workflows_dir)
 
         workflows = registry.find_workflows()
 
         if not workflows:
-            console.print(Panel("""
+            console.print(
+                Panel(
+                    """
 No workflows found. To get started, create a workflow file like this:
 
 [blue]example-workflow.yml:[/blue]
@@ -315,7 +346,11 @@ jobs:
     steps:
       - name: Say Hello
         run: echo "Hello, LocalFlow!"
-""", title="No Workflows Found", border_style="yellow"))
+""",
+                    title="No Workflows Found",
+                    border_style="yellow",
+                )
+            )
             return
 
         # Create and populate the table
@@ -323,7 +358,7 @@ jobs:
             title="Available Workflows",
             show_header=True,
             header_style="bold blue",
-            border_style="blue"
+            border_style="blue",
         )
 
         table.add_column("ID", justify="left", no_wrap=True)
@@ -336,7 +371,8 @@ jobs:
 
         for workflow in workflows:
             location = (
-                "Local" if workflow.source.parent == config.local_workflows_dir
+                "Local"
+                if workflow.source.parent == config.local_workflows_dir
                 else "Global"
             )
             table.add_row(
@@ -346,7 +382,7 @@ jobs:
                 ", ".join(sorted(workflow.tags)) or "None",
                 workflow.version,
                 workflow.author or "Unknown",
-                location
+                location,
             )
 
         console.print(table)
@@ -356,25 +392,21 @@ jobs:
         if config.log_level == "DEBUG":
             console.print_exception()
 
+
 @cli.command()
-@click.argument('workflow_id')
+@click.argument("workflow_id")
 @click.pass_obj
 def jobs(config: Config, workflow_id: str):
     """List available jobs in a workflow"""
     try:
         # Initialize registry and discover workflows
         registry = WorkflowRegistry()
-        registry.discover_workflows(
-            config.workflows_dir,
-            config.local_workflows_dir
-        )
+        registry.discover_workflows(config.workflows_dir, config.local_workflows_dir)
 
         # Get workflow
         workflow = registry.get_workflow(workflow_id)
         if not workflow:
-            console.print(
-                f"[red]No workflow found with ID: {workflow_id}[/red]"
-            )
+            console.print(f"[red]No workflow found with ID: {workflow_id}[/red]")
             return
 
         # Create the jobs table
@@ -382,7 +414,7 @@ def jobs(config: Config, workflow_id: str):
             title=f"Jobs in {workflow.name}",
             show_header=True,
             header_style="bold blue",
-            border_style="blue"
+            border_style="blue",
         )
 
         table.add_column("ID", justify="left", no_wrap=True)
@@ -400,7 +432,7 @@ def jobs(config: Config, workflow_id: str):
                 job.description or "No description",
                 ", ".join(sorted(job.tags)) or "None",
                 ", ".join(sorted(job.needs)) or "None",
-                job.condition.expression if job.condition else "None"
+                job.condition.expression if job.condition else "None",
             )
 
         console.print("\n")  # Add spacing
@@ -408,14 +440,13 @@ def jobs(config: Config, workflow_id: str):
 
         # Print usage hint
         console.print("\n[dim]To run a specific job, use:[/dim]")
-        console.print(
-            f"[dim]  localflow run {workflow_id} --job <job_id>[/dim]"
-        )
+        console.print(f"[dim]  localflow run {workflow_id} --job <job_id>[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error listing jobs: {e}[/red]")
         if config.log_level == "DEBUG":
             console.print_exception()
+
 
 @cli.command()
 @click.pass_obj
@@ -427,7 +458,7 @@ def config(config: Config):
             title="Current Configuration",
             show_header=True,
             header_style="bold blue",
-            border_style="blue"
+            border_style="blue",
         )
 
         table.add_column("Setting", style="bold")
@@ -436,24 +467,24 @@ def config(config: Config):
 
         # Configuration descriptions for better understanding
         descriptions = {
-            'workflows_dir': 'Directory containing workflow files',
-            'log_dir': 'Directory for log files',
-            'log_level': 'Logging verbosity level',
-            'docker_enabled': 'Whether Docker execution is enabled',
-            'docker_default_image': 'Default Docker image for containerized steps',
-            'show_output': 'Whether to show command output in console',
-            'default_shell': 'Default shell for executing commands'
+            "workflows_dir": "Directory containing workflow files",
+            "log_dir": "Directory for log files",
+            "log_level": "Logging verbosity level",
+            "docker_enabled": "Whether Docker execution is enabled",
+            "docker_default_image": "Default Docker image for containerized steps",
+            "show_output": "Whether to show command output in console",
+            "default_shell": "Default shell for executing commands",
         }
 
         for key, value in asdict(config).items():
             table.add_row(
-                str(key),
-                str(value),
-                descriptions.get(key, 'No description available')
+                str(key), str(value), descriptions.get(key, "No description available")
             )
 
         # Print configuration source
-        config_source = os.environ.get('LOCALFLOW_CONFIG', 'Using default configuration')
+        config_source = os.environ.get(
+            "LOCALFLOW_CONFIG", "Using default configuration"
+        )
         console.print(f"\n[dim]Configuration source: {config_source}[/dim]\n")
 
         # Print the configuration table
@@ -462,36 +493,37 @@ def config(config: Config):
         # Print help text for modifying configuration
         console.print("\n[dim]To use a different configuration file:[/dim]")
         console.print("[dim]  1. Set LOCALFLOW_CONFIG environment variable[/dim]")
-        console.print("[dim]  2. Use --config option: localflow --config path/to/config.yaml <command>[/dim]")
+        console.print(
+            "[dim]  2. Use --config option: localflow --config path/to/config.yaml <command>[/dim]"
+        )
 
     except Exception as e:
         console.print(f"[red]Error displaying configuration: {e}[/red]")
         if config.log_level == "DEBUG":
             console.print_exception()
 
+
 @cli.group()
 def events():
     """Manage event monitoring and triggers"""
     pass
 
-@events.command('list')
+
+@events.command("list")
 @click.pass_obj
 def list_events(config: Config):
     """List configured event triggers"""
     try:
         # Initialize registry and discover workflows
         registry = WorkflowRegistry()
-        registry.discover_workflows(
-            config.workflows_dir,
-            config.local_workflows_dir
-        )
+        registry.discover_workflows(config.workflows_dir, config.local_workflows_dir)
 
         # Create table for events
         table = Table(
             title="Configured Event Triggers",
             show_header=True,
             header_style="bold blue",
-            border_style="blue"
+            border_style="blue",
         )
 
         table.add_column("Workflow", justify="left")
@@ -520,7 +552,7 @@ def list_events(config: Config):
                     "\n".join(event.trigger.paths),
                     "\n".join(event.trigger.patterns),
                     "✓" if event.trigger.recursive else "✗",
-                    "\n".join(conditions) or "None"
+                    "\n".join(conditions) or "None",
                 )
 
         console.print("\n")
@@ -532,14 +564,15 @@ def list_events(config: Config):
         if config.log_level == "DEBUG":
             console.print_exception()
 
-@events.command('status')
+
+@events.command("status")
 @click.pass_obj
 def event_status(config: Config):
     """Show event monitoring status"""
     try:
         if not config.monitor_pid_file.exists():
             console.print("[yellow]Event monitor is not running[/yellow]")
-            return 
+            return
 
         with open(pid_file) as f:
             pid = int(f.read().strip())
@@ -559,16 +592,19 @@ def event_status(config: Config):
             table.add_row("PID", str(pid))
             table.add_row("CPU Usage", f"{cpu_percent}%")
             table.add_row("Memory Usage", f"{memory_info.rss / 1024 / 1024:.2f} MB")
-            table.add_row("Start Time", time.strftime('%Y-%m-%d %H:%M:%S',
-                          time.localtime(process.create_time())))
+            table.add_row(
+                "Start Time",
+                time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(process.create_time())
+                ),
+            )
 
             console.print(table)
 
             # Show active watches
             registry = WorkflowRegistry()
             registry.discover_workflows(
-                config.workflows_dir,
-                config.local_workflows_dir
+                config.workflows_dir, config.local_workflows_dir
             )
             monitor = EventMonitor(config, registry)
             monitor.setup_watches()
@@ -578,10 +614,7 @@ def event_status(config: Config):
             watch_table.add_column("Recursive")
 
             for path, recursive_set in monitor.watch_paths.items():
-                watch_table.add_row(
-                    str(path),
-                    "✓" if any(recursive_set) else "✗"
-                )
+                watch_table.add_row(str(path), "✓" if any(recursive_set) else "✗")
 
             console.print("\n")
             console.print(watch_table)
@@ -596,9 +629,10 @@ def event_status(config: Config):
         if config.log_level == "DEBUG":
             console.print_exception()
 
-@events.command('start')
+
+@events.command("start")
 @click.pass_obj
-@click.option('--foreground', '-f', is_flag=True, help="Run in foreground (no daemon)")
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (no daemon)")
 def start_monitor(config: Config, foreground: bool):
     """Start event monitoring"""
     try:
@@ -606,12 +640,11 @@ def start_monitor(config: Config, foreground: bool):
             # Run directly (no daemon)
             registry = WorkflowRegistry()
             registry.discover_workflows(
-                config.workflows_dir,
-                config.local_workflows_dir
+                config.workflows_dir, config.local_workflows_dir
             )
-            
+
             monitor = EventMonitor(config, registry)
-            
+
             console.print("[green]Starting event monitor in foreground...[/green]")
             try:
                 monitor.start()
@@ -624,11 +657,11 @@ def start_monitor(config: Config, foreground: bool):
             # Import and run daemon
             from daemon import DaemonContext
             from daemon.pidfile import PIDLockFile
-            
+
             if config.monitor_pid_file.exists():
                 console.print("[yellow]Event monitor is already running[/yellow]")
-                return 
-                
+                return
+
             service = LocalFlowMonitorService(
                 config_path=str(config.config_file) if config.config_file else None
             )
@@ -638,15 +671,15 @@ def start_monitor(config: Config, foreground: bool):
 
             context = DaemonContext(
                 pidfile=PIDLockFile(str(config.monitor_pid_file)),
-                working_directory='/',
+                working_directory="/",
                 umask=0o002,
-                detach_process=True
+                detach_process=True,
             )
-            
+
             try:
                 with context:
                     service.run()
-                    
+
                 # Wait a bit to check if daemon started successfully
                 time.sleep(1)
                 if config.monitor_pid_file.exists():
@@ -663,19 +696,21 @@ def start_monitor(config: Config, foreground: bool):
         if config.log_level == "DEBUG":
             console.print_exception()
 
-@events.command('stop')
+
+@events.command("stop")
 def stop_monitor():
     """Stop event monitoring daemon"""
     try:
         if not config.monitor_pid_file.exists():
             console.print("[yellow]Event monitor is not running[/yellow]")
-            return 
-            
+            return
+
         try:
             with open(str(config.monitor_pid_file)) as f:
                 pid = int(f.read().strip())
             os.kill(pid, signal.SIGTERM)
-            import signal            
+            import signal
+
             # Wait for process to stop
             time.sleep(1)
             if not pid_file.exists():
@@ -695,10 +730,11 @@ def stop_monitor():
         if config.log_level == "DEBUG":
             console.print_exception()
 
-@events.command('logs')
+
+@events.command("logs")
 @click.pass_obj
-@click.option('--follow', '-f', is_flag=True, help="Follow log output")
-@click.option('--lines', '-n', default=100, help="Number of lines to show")
+@click.option("--follow", "-f", is_flag=True, help="Follow log output")
+@click.option("--lines", "-n", default=100, help="Number of lines to show")
 def show_logs(config: Config, follow: bool, lines: int):
     """Show event monitor logs"""
     try:
@@ -739,6 +775,7 @@ def show_logs(config: Config, follow: bool, lines: int):
         if config.log_level == "DEBUG":
             console.print_exception()
 
+
 def tail(f, lines=1):
     """Read last N lines from file"""
     total_lines_wanted = lines
@@ -758,13 +795,14 @@ def tail(f, lines=1):
             f.seek(0, 0)
             blocks.append(f.read(block_end_byte))
 
-        lines_found = blocks[-1].count(b'\n')
+        lines_found = blocks[-1].count(b"\n")
         lines_to_go -= lines_found
         block_end_byte -= BLOCK_SIZE
         block_number -= 1
 
-    all_read = b''.join(reversed(blocks))
+    all_read = b"".join(reversed(blocks))
     return all_read.splitlines()[-total_lines_wanted:]
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     cli()

@@ -10,13 +10,16 @@ import pwd
 
 from typing import Dict, Set
 
-from watchdog.events import (FileCreatedEvent, FileDeletedEvent,
-                             FileModifiedEvent, FileSystemEventHandler)
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers import Observer
 
 from config import Config
 from executor import WorkflowExecutor
-
 
 
 class LocalFlowEventHandler(FileSystemEventHandler):
@@ -32,7 +35,7 @@ class LocalFlowEventHandler(FileSystemEventHandler):
         """
         self.workflow_registry = workflow_registry
         self.config = config
-        self.logger = logging.getLogger('LocalFlow.EventHandler')
+        self.logger = logging.getLogger("LocalFlow.EventHandler")
 
     def get_file_info(self, path: str) -> dict:
         """
@@ -47,17 +50,17 @@ class LocalFlowEventHandler(FileSystemEventHandler):
         try:
             stat = os.stat(path)
             return {
-                'path': path,
-                'size': stat.st_size,
-                'owner': pwd.getpwuid(stat.st_uid).pw_name,
-                'group': grp.getgrgid(stat.st_gid).gr_name,
-                'mode': stat.st_mode,
-                'created': stat.st_ctime,
-                'modified': stat.st_mtime
+                "path": path,
+                "size": stat.st_size,
+                "owner": pwd.getpwuid(stat.st_uid).pw_name,
+                "group": grp.getgrgid(stat.st_gid).gr_name,
+                "mode": stat.st_mode,
+                "created": stat.st_ctime,
+                "modified": stat.st_mtime,
             }
         except (OSError, KeyError) as e:
             self.logger.error(f"Error getting file info for {path}: {e}")
-            return {'path': path}
+            return {"path": path}
 
     def trigger_workflows(self, event_type: str, file_info: dict):
         """
@@ -76,10 +79,7 @@ class LocalFlowEventHandler(FileSystemEventHandler):
                             f"for {event_type} event on {file_info['path']}"
                         )
                         try:
-                            executor = WorkflowExecutor(
-                                workflow.source,
-                                self.config
-                            )
+                            executor = WorkflowExecutor(workflow.source, self.config)
                             if event.job_ids:
                                 for job_id in event.job_ids:
                                     executor.execute_job(job_id)
@@ -94,19 +94,20 @@ class LocalFlowEventHandler(FileSystemEventHandler):
         """Handle file modification events."""
         if not event.is_directory:
             file_info = self.get_file_info(event.src_path)
-            self.trigger_workflows('file_change', file_info)
+            self.trigger_workflows("file_change", file_info)
 
     def on_created(self, event):
         """Handle file creation events."""
         if not event.is_directory:
             file_info = self.get_file_info(event.src_path)
-            self.trigger_workflows('file_create', file_info)
+            self.trigger_workflows("file_create", file_info)
 
     def on_deleted(self, event):
         """Handle file deletion events."""
         if not event.is_directory:
-            file_info = {'path': event.src_path}
-            self.trigger_workflows('file_delete', file_info)
+            file_info = {"path": event.src_path}
+            self.trigger_workflows("file_delete", file_info)
+
 
 class EventMonitor:
     """File system event monitor for LocalFlow."""
@@ -121,7 +122,7 @@ class EventMonitor:
         """
         self.config = config
         self.workflow_registry = workflow_registry
-        self.logger = logging.getLogger('LocalFlow.EventMonitor')
+        self.logger = logging.getLogger("LocalFlow.EventMonitor")
         self.observer = Observer()
         self.watch_paths: Dict[str, Set[str]] = {}
 
@@ -141,17 +142,10 @@ class EventMonitor:
                         )
 
         # Setup watches
-        handler = LocalFlowEventHandler(
-            self.workflow_registry,
-            self.config
-        )
+        handler = LocalFlowEventHandler(self.workflow_registry, self.config)
         for path, recursive_set in self.watch_paths.items():
             recursive = any(recursive_set)  # If any trigger wants recursive
-            self.observer.schedule(
-                handler,
-                path,
-                recursive=recursive
-            )
+            self.observer.schedule(handler, path, recursive=recursive)
             self.logger.info(
                 f"Watching {path} "
                 f"({'recursively' if recursive else 'non-recursively'})"

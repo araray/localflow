@@ -11,8 +11,7 @@ import yaml
 
 from events import EventMonitor, LocalFlowEventHandler
 from schema import Event, EventTrigger, Workflow
-
-from localflow import
+from config import Config
 
 
 @pytest.fixture
@@ -21,90 +20,77 @@ def temp_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
 
+
 @pytest.fixture
 def event_workflow(temp_dir):
     """Create a test workflow with event triggers."""
     content = {
-        'id': 'wf_event_test',
-        'name': 'Event Test Workflow',
-        'version': '1.0.0',
-        'events': [
+        "id": "wf_event_test",
+        "name": "Event Test Workflow",
+        "version": "1.0.0",
+        "events": [
             {
-                'type': 'file_change',
-                'workflow_id': 'wf_event_test',
-                'trigger': {
-                    'paths': [str(temp_dir)],
-                    'patterns': ['*.txt'],
-                    'recursive': True,
-                    'max_depth': 3,
-                    'min_size': 100,
-                    'max_size': 1000000
-                }
+                "type": "file_change",
+                "workflow_id": "wf_event_test",
+                "trigger": {
+                    "paths": [str(temp_dir)],
+                    "patterns": ["*.txt"],
+                    "recursive": True,
+                    "max_depth": 3,
+                    "min_size": 100,
+                    "max_size": 1000000,
+                },
             }
         ],
-        'jobs': {
-            'process': {
-                'id': 'job_process',
-                'steps': [
-                    {'run': 'echo "Processing file"'}
-                ]
+        "jobs": {
+            "process": {
+                "id": "job_process",
+                "steps": [{"run": 'echo "Processing file"'}],
             }
-        }
+        },
     }
 
-    workflow_file = temp_dir / 'event_workflow.yml'
-    with open(workflow_file, 'w') as f:
+    workflow_file = temp_dir / "event_workflow.yml"
+    with open(workflow_file, "w") as f:
         yaml.dump(content, f)
 
     return Workflow.from_file(workflow_file)
+
 
 @pytest.fixture
 def config(temp_dir):
     """Create test configuration."""
     return Config(
-        workflows_dir=temp_dir / 'workflows',
-        local_workflows_dir=temp_dir / '.localflow',
-        log_dir=temp_dir / 'logs',
-        log_level='DEBUG',
+        workflows_dir=temp_dir / "workflows",
+        local_workflows_dir=temp_dir / ".localflow",
+        log_dir=temp_dir / "logs",
+        log_level="DEBUG",
         docker_enabled=False,
-        docker_default_image='ubuntu:latest',
+        docker_default_image="ubuntu:latest",
         show_output=True,
-        default_shell='/bin/bash'
+        default_shell="/bin/bash",
     )
+
 
 def test_event_trigger_matching():
     """Test event trigger pattern matching."""
     trigger = EventTrigger(
-        paths=['/test'],
-        patterns=['*.txt', r'data\d+\.csv'],
+        paths=["/test"],
+        patterns=["*.txt", r"data\d+\.csv"],
         recursive=True,
         min_size=100,
-        max_size=1000
+        max_size=1000,
     )
 
     # Test file pattern matching
-    assert trigger.matches({
-        'path': '/test/file.txt',
-        'size': 500
-    })
-    assert trigger.matches({
-        'path': '/test/data123.csv',
-        'size': 500
-    })
-    assert not trigger.matches({
-        'path': '/test/file.pdf',
-        'size': 500
-    })
+    assert trigger.matches({"path": "/test/file.txt", "size": 500})
+    assert trigger.matches({"path": "/test/data123.csv", "size": 500})
+    assert not trigger.matches({"path": "/test/file.pdf", "size": 500})
 
     # Test size constraints
-    assert not trigger.matches({
-        'path': '/test/file.txt',
-        'size': 50
-    })
-    assert not trigger.matches({
-        'path': '/test/file.txt',
-        'size': 1500
-    })
+    assert not trigger.matches({"path": "/test/file.txt", "size": 50})
+    assert not trigger.matches({"path": "/test/file.txt", "size": 1500})
+
 
 def test_event_handler(config, event_workflow, temp_dir):
     """Test event handler workflow triggering."""
@@ -114,19 +100,17 @@ def test_event_handler(config, event_workflow, temp_dir):
     handler = LocalFlowEventHandler(registry, config)
 
     # Create a test file
-    test_file = temp_dir / 'test.txt'
-    with open(test_file, 'w') as f:
-        f.write('test' * 100)  # Create file with size 400 bytes
+    test_file = temp_dir / "test.txt"
+    with open(test_file, "w") as f:
+        f.write("test" * 100)  # Create file with size 400 bytes
 
     # Mock workflow execution
-    with patch('events.WorkflowExecutor') as mock_executor:
-        handler.on_modified(MagicMock(
-            is_directory=False,
-            src_path=str(test_file)
-        ))
+    with patch("events.WorkflowExecutor") as mock_executor:
+        handler.on_modified(MagicMock(is_directory=False, src_path=str(test_file)))
 
         mock_executor.assert_called_once()
         mock_executor.return_value.run.assert_called_once()
+
 
 def test_event_monitor(config, event_workflow, temp_dir):
     """Test event monitor setup and watch management."""
@@ -136,39 +120,38 @@ def test_event_monitor(config, event_workflow, temp_dir):
     monitor = EventMonitor(config, registry)
 
     # Test watch setup
-    with patch('watchdog.observers.Observer.schedule') as mock_schedule:
+    with patch("watchdog.observers.Observer.schedule") as mock_schedule:
         monitor.setup_watches()
         mock_schedule.assert_called_once()
 
         # Verify recursive watching is enabled
         args = mock_schedule.call_args[1]
-        assert args['recursive'] is True
+        assert args["recursive"] is True
+
 
 def test_workflow_event_loading(temp_dir):
     """Test loading workflow with event configuration."""
     content = {
-        'id': 'wf_test',
-        'name': 'Test Workflow',
-        'events': [
+        "id": "wf_test",
+        "name": "Test Workflow",
+        "events": [
             {
-                'type': 'file_change',
-                'workflow_id': 'wf_test',
-                'trigger': {
-                    'paths': ['/test'],
-                    'patterns': ['*.txt']
-                }
+                "type": "file_change",
+                "workflow_id": "wf_test",
+                "trigger": {"paths": ["/test"], "patterns": ["*.txt"]},
             }
-        ]
+        ],
     }
 
-    workflow_file = temp_dir / 'workflow.yml'
-    with open(workflow_file, 'w') as f:
+    workflow_file = temp_dir / "workflow.yml"
+    with open(workflow_file, "w") as f:
         yaml.dump(content, f)
 
     workflow = Workflow.from_file(workflow_file)
     assert len(workflow.events) == 1
-    assert workflow.events[0].type == 'file_change'
-    assert '*.txt' in workflow.events[0].trigger.patterns
+    assert workflow.events[0].type == "file_change"
+    assert "*.txt" in workflow.events[0].trigger.patterns
+
 
 @pytest.mark.integration
 def test_event_triggered_workflow(config, event_workflow, temp_dir):
@@ -181,29 +164,30 @@ def test_event_triggered_workflow(config, event_workflow, temp_dir):
 
     try:
         # Create a file that should trigger the workflow
-        test_file = temp_dir / 'test.txt'
-        with open(test_file, 'w') as f:
-            f.write('test' * 100)
+        test_file = temp_dir / "test.txt"
+        with open(test_file, "w") as f:
+            f.write("test" * 100)
 
         # Wait for event processing
         time.sleep(2)
 
         # Verify log file for workflow execution
-        log_file = config.log_dir / 'localflow-daemon.log'
+        log_file = config.log_dir / "localflow-daemon.log"
         assert log_file.exists()
         log_content = log_file.read_text()
-        assert 'Triggering workflow wf_event_test' in log_content
+        assert "Triggering workflow wf_event_test" in log_content
 
     finally:
         monitor.stop()
+
 
 def test_daemon_pidfile_handling():
     """Test daemon PID file management."""
     with tempfile.NamedTemporaryFile() as pid_file:
         # Test PID file creation
         daemon = LocalFlowDaemon()
-        with patch('daemon.DaemonContext'):
-            with patch.object(daemon, 'run'):
+        with patch("daemon.DaemonContext"):
+            with patch.object(daemon, "run"):
                 context = DaemonContext(pidfile=PIDLockFile(pid_file.name))
                 with context:
                     assert os.path.exists(pid_file.name)
@@ -211,5 +195,6 @@ def test_daemon_pidfile_handling():
         # Test PID file cleanup
         assert not os.path.exists(pid_file.name)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     pytest.main([__file__])

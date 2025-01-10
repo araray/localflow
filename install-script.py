@@ -20,12 +20,13 @@ from rich.prompt import Confirm, Prompt
 
 console = Console()
 
+
 class Installer:
     def __init__(self):
         self.console = Console()
         self.home_dir = Path.home()
-        self.default_install_dir = self.home_dir / '.localflow'
-        self.default_bin_dir = self.home_dir / '.local' / 'bin'
+        self.default_install_dir = self.home_dir / ".localflow"
+        self.default_bin_dir = self.home_dir / ".local" / "bin"
         self.config: Dict[str, Any] = {}
 
     def print_welcome(self) -> None:
@@ -41,12 +42,14 @@ This script will help you set up LocalFlow on your system. We'll:
 
 You can accept the defaults or customize the installation to your needs.
 """
-        self.console.print(Panel(welcome_text, title="LocalFlow Installer", border_style="blue"))
+        self.console.print(
+            Panel(welcome_text, title="LocalFlow Installer", border_style="blue")
+        )
 
     def check_prerequisites(self) -> bool:
         """Check if system meets all prerequisites."""
         self.console.print("\n[bold]Checking prerequisites...[/bold]")
-        
+
         # Check Python version
         python_version = sys.version_info
         if python_version < (3, 8):
@@ -55,8 +58,11 @@ You can accept the defaults or customize the installation to your needs.
 
         # Check pip installation
         try:
-            subprocess.run([sys.executable, "-m", "pip", "--version"], 
-                         capture_output=True, check=True)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                capture_output=True,
+                check=True,
+            )
         except subprocess.CalledProcessError:
             self.console.print("[red]Error: pip is not installed[/red]")
             return False
@@ -65,8 +71,10 @@ You can accept the defaults or customize the installation to your needs.
         try:
             subprocess.run(["git", "--version"], capture_output=True, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError):
-            self.console.print("[yellow]Warning: git is not installed. " 
-                             "It's recommended but not required.[/yellow]")
+            self.console.print(
+                "[yellow]Warning: git is not installed. "
+                "It's recommended but not required.[/yellow]"
+            )
 
         self.console.print("[green]✓ All core prerequisites met[/green]")
         return True
@@ -77,23 +85,17 @@ You can accept the defaults or customize the installation to your needs.
 
         # Get main installation directory
         default_install = str(self.default_install_dir)
-        install_dir = Prompt.ask(
-            "Main installation directory",
-            default=default_install
-        )
+        install_dir = Prompt.ask("Main installation directory", default=default_install)
         self.install_dir = Path(install_dir).expanduser()
 
         # Get binary installation directory
         default_bin = str(self.default_bin_dir)
-        bin_dir = Prompt.ask(
-            "Binary installation directory",
-            default=default_bin
-        )
+        bin_dir = Prompt.ask("Binary installation directory", default=default_bin)
         self.bin_dir = Path(bin_dir).expanduser()
 
         # Set up subdirectories
-        self.workflows_dir = self.install_dir / 'workflows'
-        self.logs_dir = self.install_dir / 'logs'
+        self.workflows_dir = self.install_dir / "workflows"
+        self.logs_dir = self.install_dir / "logs"
         self.config_dir = self.install_dir
 
         # Show summary
@@ -108,12 +110,12 @@ You can accept the defaults or customize the installation to your needs.
     def create_directories(self) -> None:
         """Create necessary directories."""
         self.console.print("\n[bold]Creating directories...[/bold]")
-        
+
         directories = [
             self.install_dir,
             self.workflows_dir,
             self.logs_dir,
-            self.bin_dir
+            self.bin_dir,
         ]
 
         for directory in directories:
@@ -127,19 +129,20 @@ You can accept the defaults or customize the installation to your needs.
     def install_dependencies(self) -> None:
         """Install required Python packages."""
         self.console.print("\n[bold]Installing dependencies...[/bold]")
-        
+
         requirements = [
-            'click>=8.0.0',
-            'rich>=10.0.0',
-            'pyyaml>=5.4.0',
-            'docker>=5.0.0',
-            'tabulate>=0.8.9'
+            "click>=8.0.0",
+            "rich>=10.0.0",
+            "pyyaml>=5.4.0",
+            "docker>=5.0.0",
+            "tabulate>=0.8.9",
         ]
 
         try:
-            subprocess.run([
-                sys.executable, "-m", "pip", "install", "--user"
-            ] + requirements, check=True)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--user"] + requirements,
+                check=True,
+            )
             self.console.print("[green]✓ Successfully installed dependencies[/green]")
         except subprocess.CalledProcessError as e:
             self.console.print(f"[red]Error installing dependencies: {e}[/red]")
@@ -150,26 +153,25 @@ You can accept the defaults or customize the installation to your needs.
         self.console.print("\n[bold]Creating configuration file...[/bold]")
 
         # Get Docker preferences
-        docker_enabled = Confirm.ask(
-            "Enable Docker support?",
-            default=False
-        )
+        docker_enabled = Confirm.ask("Enable Docker support?", default=False)
 
         config = {
-            'workflows_dir': str(self.workflows_dir),
-            'log_dir': str(self.logs_dir),
-            'log_level': "INFO",
-            'show_output': True,
-            'docker_enabled': docker_enabled,
-            'docker_default_image': "ubuntu:latest",
-            'default_shell': "/bin/bash"
+            "workflows_dir": str(self.workflows_dir),
+            "log_dir": str(self.logs_dir),
+            "log_level": "INFO",
+            "show_output": True,
+            "docker_enabled": docker_enabled,
+            "docker_default_image": "ubuntu:latest",
+            "default_shell": "/bin/bash",
         }
 
-        config_file = self.config_dir / 'config.yml'
+        config_file = self.config_dir / "config.yml"
         try:
-            with open(config_file, 'w') as f:
+            with open(config_file, "w") as f:
                 yaml.safe_dump(config, f, default_flow_style=False)
-            self.console.print(f"[green]✓ Created configuration at {config_file}[/green]")
+            self.console.print(
+                f"[green]✓ Created configuration at {config_file}[/green]"
+            )
         except Exception as e:
             self.console.print(f"[red]Error creating config file: {e}[/red]")
             raise
@@ -179,7 +181,7 @@ You can accept the defaults or customize the installation to your needs.
         self.console.print("\n[bold]Setting up shell environment...[/bold]")
 
         # Determine shell
-        shell = os.environ.get('SHELL', '').split('/')[-1]
+        shell = os.environ.get("SHELL", "").split("/")[-1]
         if not shell:
             self.console.print("[yellow]Could not determine shell type[/yellow]")
             return
@@ -193,19 +195,23 @@ export PATH="{self.bin_dir}:$PATH"
 
         # Determine rc file
         rc_file = None
-        if shell == 'bash':
-            rc_file = self.home_dir / '.bashrc'
-        elif shell == 'zsh':
-            rc_file = self.home_dir / '.zshrc'
+        if shell == "bash":
+            rc_file = self.home_dir / ".bashrc"
+        elif shell == "zsh":
+            rc_file = self.home_dir / ".zshrc"
 
         if rc_file:
             if Confirm.ask(f"Add LocalFlow configuration to {rc_file}?"):
                 try:
-                    with open(rc_file, 'a') as f:
+                    with open(rc_file, "a") as f:
                         f.write(env_setup)
-                    self.console.print(f"[green]✓ Added configuration to {rc_file}[/green]")
+                    self.console.print(
+                        f"[green]✓ Added configuration to {rc_file}[/green]"
+                    )
                 except Exception as e:
-                    self.console.print(f"[red]Error updating shell configuration: {e}[/red]")
+                    self.console.print(
+                        f"[red]Error updating shell configuration: {e}[/red]"
+                    )
                     return
 
         self.console.print(f"\nTo manually configure your shell, add these lines:")
@@ -231,11 +237,13 @@ jobs:
           echo "User: $(whoami)"
 """
 
-        workflow_file = self.workflows_dir / 'example.yml'
+        workflow_file = self.workflows_dir / "example.yml"
         try:
-            with open(workflow_file, 'w') as f:
+            with open(workflow_file, "w") as f:
                 f.write(example_workflow.lstrip())
-            self.console.print(f"[green]✓ Created example workflow at {workflow_file}[/green]")
+            self.console.print(
+                f"[green]✓ Created example workflow at {workflow_file}[/green]"
+            )
         except Exception as e:
             self.console.print(f"[red]Error creating example workflow: {e}[/red]")
             raise
@@ -245,8 +253,8 @@ jobs:
         self.console.print("\n[bold]Installing LocalFlow...[/bold]")
 
         # Copy main script
-        script_source = Path(__file__).parent / 'localflow.py'
-        script_dest = self.bin_dir / 'localflow'
+        script_source = Path(__file__).parent / "localflow.py"
+        script_dest = self.bin_dir / "localflow"
 
         try:
             shutil.copy2(script_source, script_dest)
@@ -260,7 +268,7 @@ jobs:
         """Run the complete installation process."""
         try:
             self.print_welcome()
-            
+
             if not self.check_prerequisites():
                 return
 
@@ -274,7 +282,9 @@ jobs:
             self.create_example_workflow()
             self.install_localflow()
 
-            self.console.print(Panel("""
+            self.console.print(
+                Panel(
+                    """
 [green]LocalFlow has been successfully installed![/green]
 
 To get started:
@@ -283,13 +293,18 @@ To get started:
 3. Run 'localflow --help' to see all available commands
 
 Refer to the documentation for more information on creating workflows.
-""", title="Installation Complete", border_style="green"))
+""",
+                    title="Installation Complete",
+                    border_style="green",
+                )
+            )
 
         except Exception as e:
             self.console.print(f"\n[red]Installation failed: {e}[/red]")
             self.console.print("\nPlease fix the error and try again.")
             sys.exit(1)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     installer = Installer()
     installer.run()

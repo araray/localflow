@@ -27,9 +27,11 @@ def generate_id(prefix: str, content: str) -> str:
     hash_obj = hashlib.sha256(content.encode())
     return f"{prefix}_{hash_obj.hexdigest()[:8]}"
 
+
 @dataclass
 class EventTrigger:
     """Represents a file system event trigger configuration."""
+
     paths: List[str]  # Directories to watch
     patterns: List[str] = field(default_factory=list)  # File patterns (glob/regex)
     recursive: bool = False  # Whether to watch subdirectories
@@ -50,7 +52,7 @@ class EventTrigger:
                 self._compiled_patterns.append(re.compile(pattern))
             except re.error:
                 # If it's not a valid regex, treat it as a glob pattern
-                glob_pattern = pattern.replace('*', '.*').replace('?', '.')
+                glob_pattern = pattern.replace("*", ".*").replace("?", ".")
                 self._compiled_patterns.append(re.compile(glob_pattern))
 
     def matches(self, event_info: dict) -> bool:
@@ -63,7 +65,7 @@ class EventTrigger:
         Returns:
             bool: True if event matches all criteria, False otherwise
         """
-        path = Path(event_info['path'])
+        path = Path(event_info["path"])
 
         # Check patterns
         if self.patterns:
@@ -80,15 +82,15 @@ class EventTrigger:
                 return False
 
         # Check owner
-        if self.owner and event_info.get('owner') != self.owner:
+        if self.owner and event_info.get("owner") != self.owner:
             return False
 
         # Check group
-        if self.group and event_info.get('group') != self.group:
+        if self.group and event_info.get("group") != self.group:
             return False
 
         # Check size
-        size = event_info.get('size', 0)
+        size = event_info.get("size", 0)
         if self.min_size is not None and size < self.min_size:
             return False
         if self.max_size is not None and size > self.max_size:
@@ -96,43 +98,47 @@ class EventTrigger:
 
         return True
 
+
 @dataclass
 class Event:
     """Represents an event that can trigger workflow execution."""
+
     type: str  # Event type (e.g., 'file_change', 'file_create', etc.)
     trigger: EventTrigger
     workflow_id: str  # ID of workflow to trigger
     job_ids: Optional[List[str]] = None  # Optional specific jobs to run
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'Event':
+    def from_dict(cls, data: dict) -> "Event":
         """Create Event instance from dictionary data."""
-        trigger_data = data.get('trigger', {})
+        trigger_data = data.get("trigger", {})
         return cls(
-            type=data['type'],
+            type=data["type"],
             trigger=EventTrigger(**trigger_data),
-            workflow_id=data['workflow_id'],
-            job_ids=data.get('job_ids')
+            workflow_id=data["workflow_id"],
+            job_ids=data.get("job_ids"),
         )
+
 
 @dataclass
 class Condition:
     """Represents a job execution condition."""
+
     expression: str
     references: Set[str] = field(default_factory=set)
 
     @classmethod
-    def parse(cls, condition_data: Union[str, dict]) -> 'Condition':
+    def parse(cls, condition_data: Union[str, dict]) -> "Condition":
         """Parse condition from various formats."""
         if isinstance(condition_data, str):
             # Handle simple string conditions
-            if condition_data.lower() == 'true':
-                return cls('True')  # Convert string 'true' to Python True
+            if condition_data.lower() == "true":
+                return cls("True")  # Convert string 'true' to Python True
             return cls(condition_data)
         elif isinstance(condition_data, dict):
             return cls(
-                expression=condition_data.get('if', 'True'),
-                references=set(condition_data.get('needs', []))
+                expression=condition_data.get("if", "True"),
+                references=set(condition_data.get("needs", [])),
             )
         else:
             raise ValueError(f"Invalid condition format: {condition_data}")
@@ -147,13 +153,13 @@ class Condition:
         try:
             # Create safe evaluation environment
             eval_env = {
-                'True': True,
-                'False': False,
-                'true': True,
-                'false': False,
-                'and': lambda x, y: x and y,
-                'or': lambda x, y: x or y,
-                'not': lambda x: not x
+                "True": True,
+                "False": False,
+                "true": True,
+                "false": False,
+                "and": lambda x, y: x and y,
+                "or": lambda x, y: x or y,
+                "not": lambda x: not x,
             }
 
             # Add job statuses to environment
@@ -171,6 +177,7 @@ class Condition:
         except Exception as e:
             raise ValueError(f"Failed to evaluate condition '{self.expression}': {e}")
 
+
 @dataclass
 class Job:
     """
@@ -186,6 +193,7 @@ class Job:
         env: Environment variables for this job
         needs: Set of job IDs this job depends on
     """
+
     id: str
     name: str
     description: Optional[str] = None
@@ -197,30 +205,31 @@ class Job:
     working_dir: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, name: str, data: dict, workflow_id: str) -> 'Job':
+    def from_dict(cls, name: str, data: dict, workflow_id: str) -> "Job":
         """Create a Job instance from dictionary data."""
         # Use provided ID or generate one
-        job_id = data.get('id')
+        job_id = data.get("id")
         if not job_id:
             content = f"{workflow_id}_{name}_{yaml.dump(data)}"
-            job_id = generate_id('job', content)
+            job_id = generate_id("job", content)
 
         return cls(
             id=job_id,
             name=name,  # Pass the name here
-            description=data.get('description'),
-            tags=set(data.get('tags', [])),
-            condition=Condition.parse(data.get('condition', 'true')),
-            steps=data.get('steps', []),
-            env=data.get('env', {}),
-            working_dir=data.get('working_dir', None),
-            needs=set(data.get('needs', []))
+            description=data.get("description"),
+            tags=set(data.get("tags", [])),
+            condition=Condition.parse(data.get("condition", "true")),
+            steps=data.get("steps", []),
+            env=data.get("env", {}),
+            working_dir=data.get("working_dir", None),
+            needs=set(data.get("needs", [])),
         )
 
 
 @dataclass
 class Workflow:
     """Represents a complete workflow with metadata and jobs."""
+
     name: str
     id: str  # Now required
     description: Optional[str] = None
@@ -235,7 +244,7 @@ class Workflow:
     events: List[Event] = field(default_factory=list)
 
     @classmethod
-    def from_file(cls, path: Path) -> 'Workflow':
+    def from_file(cls, path: Path) -> "Workflow":
         """Load workflow from file, using stored IDs."""
         with open(path) as f:
             data = yaml.safe_load(f)
@@ -243,50 +252,50 @@ class Workflow:
                 raise ValueError(f"Invalid workflow format in {path}")
 
             # Use existing workflow ID
-            workflow_id = data.get('id')
+            workflow_id = data.get("id")
             if not workflow_id:
                 raise ValueError(f"Workflow in {path} is missing required ID")
 
             # Parse events if present
             events = []
-            for event_data in data.get('events', []):
+            for event_data in data.get("events", []):
                 events.append(Event.from_dict(event_data))
 
             workflow = cls(
-                name=data.get('name', path.stem),
+                name=data.get("name", path.stem),
                 id=workflow_id,
-                description=data.get('description'),
-                version=data.get('version', '1.0.0'),
-                author=data.get('author'),
-                tags=set(data.get('tags', [])),
-                env=data.get('env', {}),
+                description=data.get("description"),
+                version=data.get("version", "1.0.0"),
+                author=data.get("author"),
+                tags=set(data.get("tags", [])),
+                env=data.get("env", {}),
                 events=events,
                 source=path,
                 created_at=datetime.fromtimestamp(path.stat().st_ctime),
-                modified_at=datetime.fromtimestamp(path.stat().st_mtime)
+                modified_at=datetime.fromtimestamp(path.stat().st_mtime),
             )
 
             # Parse jobs using their stored IDs
-            jobs_data = data.get('jobs', {})
+            jobs_data = data.get("jobs", {})
             for job_name, job_data in jobs_data.items():
                 if not isinstance(job_data, dict):
                     job_data = {}
 
-                if 'id' not in job_data:
+                if "id" not in job_data:
                     raise ValueError(
                         f"Job '{job_name}' in {path} is missing required ID"
                     )
 
                 workflow.jobs[job_name] = Job(
                     name=job_name,
-                    id=job_data['id'],
-                    description=job_data.get('description'),
-                    tags=set(job_data.get('tags', [])),
-                    condition=Condition.parse(job_data.get('condition', 'true')),
-                    steps=job_data.get('steps', []),
-                    env=job_data.get('env', {}),
-                    needs=set(job_data.get('needs', [])),
-                    working_dir=job_data.get('working_dir', None)
+                    id=job_data["id"],
+                    description=job_data.get("description"),
+                    tags=set(job_data.get("tags", [])),
+                    condition=Condition.parse(job_data.get("condition", "true")),
+                    steps=job_data.get("steps", []),
+                    env=job_data.get("env", {}),
+                    needs=set(job_data.get("needs", [])),
+                    working_dir=job_data.get("working_dir", None),
                 )
 
             return workflow
@@ -340,8 +349,8 @@ class WorkflowRegistry:
             if not directory.exists():
                 continue
 
-            for ext in ['.yml', '.yaml']:
-                for workflow_path in directory.glob(f'*{ext}'):
+            for ext in [".yml", ".yaml"]:
+                for workflow_path in directory.glob(f"*{ext}"):
                     try:
                         # Load raw YAML first to check/add IDs
                         with open(workflow_path) as f:
@@ -351,26 +360,25 @@ class WorkflowRegistry:
                         modified = False
 
                         # Add workflow ID if missing
-                        if 'id' not in data:
-                            data['id'] = generate_id('wf', str(workflow_path))
+                        if "id" not in data:
+                            data["id"] = generate_id("wf", str(workflow_path))
                             modified = True
 
                         # Add job IDs if missing
-                        for job_name, job_data in data.get('jobs', {}).items():
+                        for job_name, job_data in data.get("jobs", {}).items():
                             if not isinstance(job_data, dict):
                                 job_data = {}
-                                data['jobs'][job_name] = job_data
+                                data["jobs"][job_name] = job_data
 
-                            if 'id' not in job_data:
-                                job_data['id'] = generate_id(
-                                    'job',
-                                    f"{data['id']}_{job_name}"
+                            if "id" not in job_data:
+                                job_data["id"] = generate_id(
+                                    "job", f"{data['id']}_{job_name}"
                                 )
                                 modified = True
 
                         # Save updates if needed
                         if modified:
-                            with open(workflow_path, 'w') as f:
+                            with open(workflow_path, "w") as f:
                                 yaml.dump(data, f, sort_keys=False)
 
                         # Now load as Workflow object
