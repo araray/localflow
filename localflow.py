@@ -34,6 +34,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from config import Config, OutputConfig
+from daemon_manager import DaemonManager, ProcessRunningError, ProcessNotRunningError
 from events import EventRegistry
 from executor import DockerExecutor, WorkflowExecutor
 from monitor_service import LocalFlowMonitorService
@@ -41,6 +42,13 @@ from schema import WorkflowRegistry
 
 # Initialize Rich console for beautiful output
 console = Console()
+
+def get_daemon_manager(config: Config) -> DaemonManager:
+    """Get configured daemon manager instance."""
+    return DaemonManager(
+        pid_file=config.monitor_pid_file,
+        log_file=config.log_dir / config.monitor_log_file
+    )
 
 class OutputMode(str, Enum):
     """Output modes for workflow execution"""
@@ -517,7 +525,6 @@ def events():
     """Manage event monitoring and triggers"""
     pass
 
-
 @events.command("list")
 @click.pass_obj
 def list_events(config: Config):
@@ -634,7 +641,6 @@ def disable(event_id: str, config: Optional[str] = None):
     else:
         click.echo(f"Event {event_id} not found", err=True)
 
-
 @events.command()
 @click.argument('workflow-id', type=str)
 @click.option('--config', help="Path to config file")
@@ -647,130 +653,6 @@ def unregister(workflow_id: str, config: Optional[str]):
     except Exception as e:
         click.echo(f"Failed to unregister events: {e}", err=True)
         sys.exit(1)
-
-@events.command("start")
-@click.pass_obj
-@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (no daemon)")
-def start_monitor(config: Config, foreground: bool):
-    """Start event monitoring"""
-    try:
-        # Check if already running
-        if config.monitor_pid_file.exists():
-            try:
-                with open(config.monitor_pid_file) as f:
-                    pid = int(f.read().strip())
-                process = psutil.Process(pid)
-                if process.is_running():
-                    console.print("[yellow]Event monitor is already running[/yellow]")
-                    return
-                config.monitor_pid_file.unlink()
-            except (ProcessLookupError, ValueError, FileNotFoundError):
-                config.monitor_pid_file.unlink()
-
-        if foreground:
-            # Run directly (no daemon)
-            registry = WorkflowRegistry()
-            registry.discover_workflows(
-                config.workflows_dir, config.local_workflows_dir
-            )
-
-            monitor = EventMonitor(config, registry)
-
-            console.print("[green]Starting event monitor in foreground...[/green]")
-            try:
-                monitor.start()
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Stopping event monitor...[/yellow]")
-                monitor.stop()
-        else:
-            # Import and run daemon
-            from daemon import DaemonContext
-            from daemon.pidfile import PIDLockFile
-
-            # Ensure directories exist
-            config.monitor_pid_file.parent.mkdir(parents=True, exist_ok=True)
-            config.log_dir.mkdir(parents=True, exist_ok=True)
-
-            # Setup log file
-            log_file = config.log_dir / config.monitor_log_file
-            console_log = open(log_file, 'a+')
-
-            context = DaemonContext(
-                pidfile=PIDLockFile(str(config.monitor_pid_file)),
-                working_directory="/",
-                stdout=console_log,
-                stderr=console_log,
-                umask=0o002,
-                detach_process=True,
-                signal_map={
-                    signal.SIGTERM: lambda signo, frame: daemon_cleanup(config),
-                    signal.SIGINT: lambda signo, frame: daemon_cleanup(config),
-                }
-            )
-
-            try:
-                with context:
-                    service = LocalFlowMonitorService(
-                        config_path=str(config.config_file) if config.config_file else None
-                    )
-                    service.run()
-
-                # Wait a bit to check if daemon started successfully
-                time.sleep(1)
-                if config.monitor_pid_file.exists():
-                    console.print("[green]Event monitor daemon started[/green]")
-                else:
-                    console.print("[red]Failed to start event monitor daemon[/red]")
-            except Exception as e:
-                console.print(f"[red]Failed to start monitor: {e}[/red]")
-                if config.monitor_pid_file.exists():
-                    config.monitor_pid_file.unlink()
-
-    except Exception as e:
-        console.print(f"[red]Error starting monitor: {e}[/red]")
-        if config.log_level == "DEBUG":
-            console.print_exception()
-
-@events.command("stop")
-@click.pass_obj
-def stop_monitor(config: Config):
-    """Stop event monitoring daemon"""
-    try:
-        if not config.monitor_pid_file.exists():
-            console.print("[yellow]Event monitor is not running[/yellow]")
-            return
-
-        try:
-            with open(config.monitor_pid_file) as f:
-                pid = int(f.read().strip())
-
-            process = psutil.Process(pid)
-            process.terminate()
-            
-            # Wait for process to stop
-            try:
-                process.wait(timeout=10)
-            except psutil.TimeoutExpired:
-                process.kill()  # Force kill if not responding
-                process.wait()
-                
-            if config.monitor_pid_file.exists():
-                config.monitor_pid_file.unlink()
-            console.print("[green]Event monitor stopped[/green]")
-                
-        except (ProcessLookupError, FileNotFoundError, ValueError):
-            console.print("[yellow]Event monitor process not found[/yellow]")
-            if config.monitor_pid_file.exists():
-                config.monitor_pid_file.unlink()
-        except Exception as e:
-            console.print(f"[red]Error stopping monitor: {e}[/red]")
-
-    except Exception as e:
-        console.print(f"[red]Error stopping monitor: {e}[/red]")
-        if config.log_level == "DEBUG":
-            console.print_exception()
 
 @events.command("logs")
 @click.pass_obj
@@ -865,60 +747,54 @@ def daemon():
     pass
 
 @daemon.command()
-def start():
-    """Start LocalFlow daemon"""
+@click.option('--foreground', is_flag=True, help="Run in foreground instead of daemonizing")
+@click.pass_obj
+def start(config: Config, foreground: bool):
+    """Start LocalFlow daemon."""
     try:
-        ensure_single_instance()
-        service = LocalFlowMonitorService()
-        service.run()
+        manager = get_daemon_manager(config)
+        
+        # Create service instance
+        service = LocalFlowMonitorService(config)
+        
+        # Start service
+        manager.start(service, foreground=foreground)
+        
+        if foreground:
+            click.echo("LocalFlow daemon running in foreground (Ctrl+C to stop)")
+        else:
+            click.echo("LocalFlow daemon started")
+            
     except ProcessRunningError:
         click.echo("LocalFlow daemon is already running")
-        sys.exit(1)
     except Exception as e:
-        click.echo(f"Failed to start daemon: {e}", err=True)
-        sys.exit(1)
-
-@daemon.command()
-def stop():
-    """Stop LocalFlow daemon"""
-    try:
-        pid_file = Config.get_defaults().monitor_pid_file
-        if not pid_file.exists():
-            click.echo("LocalFlow daemon is not running")
-            return
-            
-        with open(pid_file) as f:
-            pid = int(f.read().strip())
-            try:
-                os.kill(pid, signal.SIGTERM)
-                click.echo("LocalFlow daemon stopped")
-                pid_file.unlink()  # Clean up PID file
-            except ProcessLookupError:
-                click.echo("LocalFlow daemon is not running (stale PID file)")
-                pid_file.unlink()  # Clean up stale file
-    except Exception as e:
-        click.echo(f"Failed to stop daemon: {e}", err=True)
+        click.echo(f"Failed to start daemon: {e}")
         sys.exit(1)
 
 @daemon.command()
-def status():
-    """Check LocalFlow daemon status"""
+@click.pass_obj
+def stop(config: Config):
+    """Stop LocalFlow daemon."""
     try:
-        pid_file = Config.get_defaults().monitor_pid_file
-        if not pid_file.exists():
-            click.echo("LocalFlow daemon is not running")
-            return
-        
-        with open(pid_file) as f:
-            pid = int(f.read().strip())
-            try:
-                os.kill(pid, 0)  # Check if process exists
-                click.echo(f"LocalFlow daemon is running (PID: {pid})")
-            except ProcessLookupError:
-                click.echo("LocalFlow daemon is not running (stale PID file)")
-                pid_file.unlink()  # Clean up stale file
+        manager = get_daemon_manager(config)
+        manager.stop()
+        click.echo("LocalFlow daemon stopped")
+    except ProcessNotRunningError:
+        click.echo("LocalFlow daemon is not running")
     except Exception as e:
-        click.echo(f"Failed to check daemon status: {e}", err=True)
+        click.echo(f"Failed to stop daemon: {e}")
+        sys.exit(1)
+
+@daemon.command()
+@click.pass_obj
+def status(config: Config):
+    """Show LocalFlow daemon status."""
+    manager = get_daemon_manager(config)
+    running, pid = manager.status()
+    if running:
+        click.echo(f"LocalFlow daemon is running (PID: {pid})")
+    else:
+        click.echo("LocalFlow daemon is not running")
 
 def tail(f, lines=1):
     """Read last N lines from file"""
