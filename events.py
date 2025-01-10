@@ -180,6 +180,8 @@ class EventRegistry:
         )
         registered_ids = []
         for event in workflow.events:
+            # Update to use workflow.id instead of event.workflow_id
+            event.workflow_id = workflow.id  # Ensure workflow ID matches
             reg = EventRegistration.from_event(event, source)
             if reg.id not in self._registrations:
                 self._registrations[reg.id] = reg
@@ -210,9 +212,14 @@ class EventRegistry:
     
     def unregister_events(self, workflow_id: str) -> List[str]:
         """Unregister all events for a workflow."""
+        # Normalize workflow ID
+        normalized_id = workflow_id.lower().replace(" ", "_")
         unregistered = []
+
         for reg_id, reg in list(self._registrations.items()):
-            if reg.workflow_id == workflow_id:
+            # Check both original ID and normalized workflow name
+            if (reg.workflow_id == workflow_id or 
+                reg.workflow_id.lower().replace(" ", "_") == normalized_id):
                 del self._registrations[reg_id]
                 unregistered.append(reg_id)
                 self.logger.info(
@@ -221,7 +228,10 @@ class EventRegistry:
         
         if unregistered:
             self._save_registrations()
-        return unregistered
+            return unregistered
+        else:
+            self.logger.info(f"No events found for workflow {workflow_id}")
+            return []
     
     def enable_event(self, event_id: str) -> bool:
         """Enable an event registration."""
@@ -327,14 +337,19 @@ class LocalFlowEventHandler(FileSystemEventHandler):
                         f"on {file_info['path']}"
                     )
                     
-                    # Use workflow registry to find workflow
+                    # Normalize IDs for comparison
+                    normalized_reg_id = reg.workflow_id.lower().replace(" ", "_")
+                    
+                    # Get all workflows
                     workflows = self.workflow_registry.find_workflows()
                     matching_workflow = None
                     
-                    # Check both ID and name
+                    # Try to find matching workflow
                     for wf in workflows:
-                        if (wf.id == reg.workflow_id or
-                            wf.name.lower().replace(" ", "_") == reg.workflow_id):
+                        wf_id = wf.id.lower().replace(" ", "_")
+                        wf_name = wf.name.lower().replace(" ", "_")
+                        
+                        if normalized_reg_id in (wf_id, wf_name):
                             matching_workflow = wf
                             break
                     
@@ -351,10 +366,14 @@ class LocalFlowEventHandler(FileSystemEventHandler):
                                 executor.run()
                             
                             self.event_registry.record_trigger(reg.id)
+                            self.logger.info(
+                                f"Successfully triggered workflow {matching_workflow.id}"
+                            )
                             
                         except Exception as e:
                             self.logger.error(
-                                f"Error executing workflow {matching_workflow.id}: {e}"
+                                f"Error executing workflow {matching_workflow.id}: {e}",
+                                exc_info=True
                             )
                     else:
                         self.logger.error(

@@ -636,18 +636,17 @@ def disable(event_id: str, config: Optional[str] = None):
 
 
 @events.command()
-@click.argument("workflow_id")
-@click.option("--config", help="Path to config file")
-def unregister(workflow_id: str, config: Optional[str] = None):
+@click.argument('workflow-id', type=str)
+@click.option('--config', help="Path to config file")
+def unregister(workflow_id: str, config: Optional[str]):
     """Unregister all events for a workflow."""
-    config = load_config(config)
-    event_registry = EventRegistry(config)
-    
-    unregistered = event_registry.unregister_events(workflow_id)
-    if unregistered:
-        click.echo(f"Unregistered {len(unregistered)} events for workflow {workflow_id}")
-    else:
-        click.echo(f"No events found for workflow {workflow_id}")
+    try:
+        cfg = Config.load_from_file(resolve_config_path(config))
+        registry = EventRegistry(cfg)
+        registry.unregister_workflow(workflow_id)
+    except Exception as e:
+        click.echo(f"Failed to unregister events: {e}", err=True)
+        sys.exit(1)
 
 @events.command("start")
 @click.pass_obj
@@ -869,9 +868,12 @@ def daemon():
 def start():
     """Start LocalFlow daemon"""
     try:
+        ensure_single_instance()
         service = LocalFlowMonitorService()
         service.run()
-        click.echo("LocalFlow daemon started successfully")
+    except ProcessRunningError:
+        click.echo("LocalFlow daemon is already running")
+        sys.exit(1)
     except Exception as e:
         click.echo(f"Failed to start daemon: {e}", err=True)
         sys.exit(1)
@@ -880,11 +882,20 @@ def start():
 def stop():
     """Stop LocalFlow daemon"""
     try:
-        # Read PID and send SIGTERM
-        with open(Config.get_defaults().monitor_pid_file) as f:
+        pid_file = Config.get_defaults().monitor_pid_file
+        if not pid_file.exists():
+            click.echo("LocalFlow daemon is not running")
+            return
+            
+        with open(pid_file) as f:
             pid = int(f.read().strip())
-            os.kill(pid, signal.SIGTERM)
-        click.echo("LocalFlow daemon stopped")
+            try:
+                os.kill(pid, signal.SIGTERM)
+                click.echo("LocalFlow daemon stopped")
+                pid_file.unlink()  # Clean up PID file
+            except ProcessLookupError:
+                click.echo("LocalFlow daemon is not running (stale PID file)")
+                pid_file.unlink()  # Clean up stale file
     except Exception as e:
         click.echo(f"Failed to stop daemon: {e}", err=True)
         sys.exit(1)
@@ -903,8 +914,9 @@ def status():
             try:
                 os.kill(pid, 0)  # Check if process exists
                 click.echo(f"LocalFlow daemon is running (PID: {pid})")
-            except OSError:
+            except ProcessLookupError:
                 click.echo("LocalFlow daemon is not running (stale PID file)")
+                pid_file.unlink()  # Clean up stale file
     except Exception as e:
         click.echo(f"Failed to check daemon status: {e}", err=True)
 

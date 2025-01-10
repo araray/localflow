@@ -32,9 +32,37 @@ class LocalFlowMonitorService:
         self.logger = None
         self.running = False
 
+    def _handle_signal(self, signum, frame):
+        """Handle termination signals."""
+        sig_name = signal.Signals(signum).name
+        self.logger.info(f"Received signal {signum} ({sig_name})")
+        
+        try:
+            # Stop event monitoring
+            if self.monitor:
+                self.monitor.stop()
+                
+            # Clean up PID file
+            if os.path.exists(self.config.monitor_pid_file):
+                os.unlink(self.config.monitor_pid_file)
+                
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}")
+            
+        finally:
+            sys.exit(0)
+
     def setup(self):
         """Setup service components."""
         try:
+            # Create PID file
+            with open(self.config.monitor_pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+
+            # Setup signal handlers
+            signal.signal(signal.SIGTERM, self._handle_signal)
+            signal.signal(signal.SIGINT, self._handle_signal)
+
             # Load configuration
             from localflow import resolve_config_path
             config_path = resolve_config_path(self.config_path)
