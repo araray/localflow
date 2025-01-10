@@ -1,127 +1,95 @@
 # LocalFlow
 
-LocalFlow is a powerful local workflow executor inspired by GitHub Actions. It allows you to define and run workflows locally or in Docker containers, with support for complex job dependencies, conditions, and environment management.
-
-## Features
-
-LocalFlow provides a robust set of features for workflow management:
-
-- YAML-based workflow definitions similar to GitHub Actions
-- Support for both local project-specific and global workflows
-- Unique, persistent IDs for workflows and jobs
-- Complex job dependencies and conditional execution
-- Local and Docker-based execution environments
-- Rich console output with progress tracking
-- Flexible output handling (console, file, or both)
-- Job and workflow tagging system
-- Environment variable management at multiple levels
-
-## Installation
-
-Install LocalFlow using pip:
-
-```bash
-pip install -r requirements.txt
-python install-script.py
-```
-
-This will install LocalFlow and its dependencies. The installation script will also create necessary configuration directories.
-
-## Quick Start
-
-1. Create a workflow file in your project's `.localflow` directory:
-
-```yaml
-id: wf_example
-name: Example Workflow
-description: A simple example workflow
-version: 1.0.0
-author: Your Name
-tags: [example]
-
-jobs:
-  setup:
-    id: job_setup
-    description: Setup environment
-    tags: [setup]
-    steps:
-      - name: Setup
-        working_dir: /path/to/project
-        run: echo "Setting up environment"
-
-  test:
-    id: job_test
-    description: Run tests
-    tags: [test]
-    condition:
-      if: job_setup
-    steps:
-      - name: Test
-        run: echo "Running tests"
-```
-
-2. Run your workflow:
-
-```bash
-# List available workflows
-localflow list
-
-# View workflow jobs
-localflow jobs wf_example
-
-# Run entire workflow
-localflow run wf_example
-
-# Run specific job
-localflow run wf_example --job job_test
-```
+A local workflow execution engine with event-based triggers and daemon support.
 
 ## Project Structure
 
 ```
 localflow/
-├── install-script.py      # Installation script
-├── LICENSE               # MIT License
-├── localflow            # Command-line entry point
-├── localflow.py         # Main implementation
-├── schema.py            # Schema definitions
-├── README.md            # This file
-├── requirements.txt     # Dependencies
-└── USAGE.md            # Detailed usage guide
+├── cli/                 # Command Line Interface
+│   ├── commands/       # CLI command modules
+│   └── main.py        # CLI entry point
+├── core/               # Core functionality
+│   ├── config.py      # Configuration management
+│   ├── executor.py    # Workflow execution
+│   ├── schema.py      # Data models
+│   └── utils.py       # Utility functions
+├── services/           # Service modules
+│   ├── daemon/        # Daemon management
+│   ├── events/        # Event handling
+│   └── workflow/      # Workflow management
+└── tests/             # Test suite
+    ├── unit/          # Unit tests
+    └── functional/    # Functional tests
 ```
 
-## Configuration
+## Installation
 
-LocalFlow can be configured through:
+```bash
+# From source
+git clone https://github.com/araray/localflow.git
+cd localflow
+pip install -e .
 
-1. Global configuration file (~/.localflow/config.yaml)
-2. Environment variables
-3. Command-line options
+# Or via pip
+pip install localflow
+```
 
-The configuration supports:
+## Usage
 
-- Workflow directory locations
-- Docker settings
-- Output handling preferences
-- Logging settings
+1. Basic workflow execution:
+```bash
+localflow run <workflow-id>
+```
 
-## Workflow Organization
+2. Running specific jobs:
+```bash
+localflow run <workflow-id> --job <job-id>
+```
 
-LocalFlow supports two locations for workflows:
+3. List available workflows:
+```bash
+localflow list
+```
 
-1. Project-specific: `.localflow` directory in your project
-2. Global: `~/.localflow/workflows` directory
+4. Manage daemon:
+```bash
+localflow daemon start
+localflow daemon status
+localflow daemon stop
+```
 
-Project-specific workflows take precedence over global ones with the same name.
+5. Manage events:
+```bash
+localflow events list
+localflow events enable <event-id>
+localflow events disable <event-id>
+```
 
-## Contributing
+See [USAGE.md](USAGE.md) for detailed documentation.
 
-Contributions are welcome! Just submit a pull request.
+## Development
+
+1. Setup development environment:
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate
+
+# Install development dependencies
+pip install -e ".[dev]"
+```
+
+2. Run tests:
+```bash
+pytest
+```
+
+3. Run linting:
+```bash
+flake8 localflow
+```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-LocalFlow is inspired by GitHub Actions and aims to provide similar functionality for local development environments.
+MIT - see [LICENSE](LICENSE) for details.

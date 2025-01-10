@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from config import Config 
-from events import EventMonitor, EventRegistry
-from schema import WorkflowRegistry
-from daemon_manager import DaemonManager
+from localflow.core import Config 
+from localflow.services.events import EventMonitor, EventRegistry
+from localflow.core.schema import WorkflowRegistry
+from .manager import DaemonManager
 
 
 class LocalFlowMonitorService:

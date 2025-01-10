@@ -18,9 +18,10 @@ from watchdog.events import (FileCreatedEvent, FileDeletedEvent,
                            FileModifiedEvent, FileSystemEventHandler)
 from watchdog.observers import Observer
 
-from config import Config
-from executor import WorkflowExecutor
-from schema import Event, generate_id, Workflow
+from localflow.core import Config
+from localflow.core.executor import WorkflowExecutor
+from localflow.core.schema import Event, generate_id, Workflow
+from .registry import EventRegistry
 
 
 @dataclass

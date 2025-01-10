@@ -16,6 +16,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Confirm
 
+from localflow.core import Config
+from localflow.core.schema import Event, Workflow, generate_id
+
 # Import LocalFlow classes
 try:
     from events import EventRegistration

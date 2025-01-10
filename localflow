@@ -1,25 +1,27 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
+"""LocalFlow command line entry point."""
 
+import os
+import sys
+from pathlib import Path
 
-function check_localflow_py() {
-    if [[ -n $1 ]] && [[ -d "$1" ]] && [[ -f "$1/localflow.py" ]]; then
-        return 0
-    fi
-    return 1
-}
+def main():
+    """Run LocalFlow CLI."""
+    # Add package directory to path if running from source
+    pkg_dir = os.environ.get('LOCALFLOW_DIR')
+    if pkg_dir:
+        pkg_path = str(Path(pkg_dir).resolve())
+        sys.path.insert(0, pkg_path)
+        
+    try:
+        from localflow.cli.main import cli
+        cli()
+    except ImportError as e:
+        print(f"Error: Failed to import LocalFlow CLI: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-dir_localflow=""
-# Look for localflow.py passed in the as parameter first
-if [[ -n $1 ]] && check_localflow_py $1; then
-    dir_localflow=$1
-    shift
-elif [[ -n ${LOCALFLOW_DIR} ]] && check_localflow_py ${LOCALFLOW_DIR}; then
-    dir_localflow=${LOCALFLOW_DIR}
-else
-    echo "Could not locate Localflow directory."
-    exit 1
-fi
-
-#echo "Localflow directory: ${dir_localflow}"
-
-python ${dir_localflow}/localflow.py $@
+if __name__ == '__main__':
+    main()
