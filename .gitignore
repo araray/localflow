@@ -10,6 +10,8 @@ __pycache__/
 src
 old-docs/
 .localflow/
+/config.yaml
+!examples/config.yaml
 
 # Distribution / packaging
 .Python
