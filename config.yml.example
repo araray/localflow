@@ -1,8 +1,0 @@
-default_shell: /bin/bash
-docker_default_image: ubuntu:latest
-docker_enabled: false
-log_dir: PATH_TO_LF/.localflow/logs
-log_level: INFO
-show_output: true
-workflows_dir: PATH_TO_LF_WORKFLOWS/workflows
-local_workflows_dir: .localflow
