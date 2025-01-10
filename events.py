@@ -7,15 +7,10 @@ import grp
 import logging
 import os
 import pwd
-
 from typing import Dict, Set
 
-from watchdog.events import (
-    FileCreatedEvent,
-    FileDeletedEvent,
-    FileModifiedEvent,
-    FileSystemEventHandler,
-)
+from watchdog.events import (FileCreatedEvent, FileDeletedEvent,
+                             FileModifiedEvent, FileSystemEventHandler)
 from watchdog.observers import Observer
 
 from config import Config

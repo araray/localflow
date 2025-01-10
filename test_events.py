@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from config import Config
 from events import EventMonitor, LocalFlowEventHandler
 from schema import Event, EventTrigger, Workflow
-from config import Config
 
 
 @pytest.fixture

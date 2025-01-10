@@ -22,13 +22,13 @@ from pathlib import Path
 from typing import Optional
 
 import click
+import psutil
 import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-import psutil
 
 from config import Config, OutputConfig
 from executor import DockerExecutor, WorkflowExecutor

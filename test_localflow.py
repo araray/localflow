@@ -10,15 +10,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from localflow import (
-    Config,
-    OutputConfig,
-    OutputHandler,
-    OutputMode,
-    WorkflowExecutor,
-    cli,
-    resolve_workflow_path,
-)
+from localflow import (Config, OutputConfig, OutputHandler, OutputMode,
+                       WorkflowExecutor, cli, resolve_workflow_path)
 
 
 @pytest.fixture
