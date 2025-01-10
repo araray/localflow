@@ -6,3 +6,9 @@ log_level: INFO
 show_output: true
 workflows_dir: PATH_TO_LF_WORKFLOWS/workflows
 local_workflows_dir: .localflow
+
+# Monitor settings
+monitor:
+  pid_file: PATH_TO_LF/.localflow/run/localflow-monitor.pid
+  log_file: localflow-monitor.log  # Will be placed under log_dir
+  check_interval: 60  # Seconds between workflow rediscovery

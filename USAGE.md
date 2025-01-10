@@ -38,7 +38,7 @@ jobs:
     steps:
       - name: "Setup"
         run: echo "Setting up"
-  
+
   build:
     id: job_build
     description: "Build job"
@@ -94,7 +94,7 @@ jobs:
     steps:
       - name: "Install Dependencies"
         run: pip install -r requirements.txt
-  
+
   test:
     id: job_test
     condition:
@@ -155,7 +155,7 @@ jobs:
     id: job_first
     steps:
       - run: echo "First job"
-  
+
   second:
     id: job_second
     needs: [job_first]
@@ -229,6 +229,47 @@ jobs:
   test:
     tags: [unit-test, automated]  # Job tags
 ```
+
+# Event-Based Workflow Triggering
+
+LocalFlow now supports automatic workflow triggering based on file system events.
+
+## Event Configuration
+
+Add events to your workflow YAML file:
+
+```yaml
+id: example_workflow
+name: File Processing Workflow
+events:
+  - type: file_change  # Event type (file_change, file_create, file_delete)
+    workflow_id: example_workflow  # Workflow to trigger
+    job_ids:  # Optional specific jobs to run
+      - job_process
+    trigger:
+      paths:  # Directories to watch
+        - ~/data
+        - /var/log
+      patterns:  # File patterns (glob/regex)
+        - "*.log"
+        - "data\d+\.csv"
+      recursive: true  # Watch subdirectories
+      max_depth: 3  # Maximum directory depth
+      include_patterns:  # Additional file patterns to include
+        - "*.txt"
+      exclude_patterns:  # Patterns to exclude
+        - "*.tmp"
+      owner: username  # Match file owner
+      group: groupname  # Match file group
+      min_size: 1024  # Minimum file size (bytes)
+      max_size: 1048576  # Maximum file size (bytes)
+
+jobs:
+  process:
+    id: job_process
+    steps:
+      - name: Process File
+        run: echo "Processing changed file"
 
 ## Troubleshooting
 

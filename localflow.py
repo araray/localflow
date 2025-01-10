@@ -30,7 +30,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.panel import Panel
 
+from config import Config, OutputConfig
 from schema import WorkflowRegistry, Workflow, Job
+from executor import WorkflowExecutor, DockerExecutor
+from monitor_service import LocalFlowMonitorService
+from utils import OutputHandler
 
 # Initialize Rich console for beautiful output
 console = Console()
@@ -100,66 +104,6 @@ class OutputConfig:
             append=append if append is not None else self.append
         )
 
-@dataclass
-class Config:
-    """Configuration settings for LocalFlow."""
-    workflows_dir: Path
-    log_dir: Path
-    log_level: str
-    docker_enabled: bool
-    docker_default_image: str
-    show_output: bool
-    default_shell: str
-    output_config: OutputConfig = field(default_factory=OutputConfig)
-    local_workflows_dir: Path = field(default_factory=lambda: Path('.localflow'))
-
-    @classmethod
-    def load_from_file(cls, config_path: Optional[Path]) -> 'Config':
-        """Load configuration from a YAML file with proper error handling."""
-        try:
-            config_data = {}
-
-            if config_path and config_path.exists():
-                with open(config_path) as f:
-                    loaded_data = yaml.safe_load(f)
-                    if loaded_data:
-                        config_data = loaded_data
-
-            # Create configuration with proper path expansion
-            return cls(
-                workflows_dir=Path(os.path.expanduser(config_data.get('workflows_dir', '~/.localflow/workflows'))),
-                local_workflows_dir=Path(config_data.get('local_workflows_dir', '.localflow')),
-                log_dir=Path(os.path.expanduser(config_data.get('log_dir', '~/.localflow/logs'))),
-                log_level=config_data.get('log_level', 'INFO'),
-                docker_enabled=config_data.get('docker_enabled', False),
-                docker_default_image=config_data.get('docker_default_image', 'ubuntu:latest'),
-                show_output=config_data.get('show_output', True),
-                default_shell=config_data.get('default_shell', '/bin/bash'),
-                output_config=OutputConfig.from_dict(config_data.get('output', {}))
-            )
-        except Exception as e:
-            console.print(f"[red]Error loading configuration: {e}[/red]")
-            return cls.get_defaults()
-
-    @classmethod
-    def get_defaults(cls) -> 'Config':
-        """Get default configuration."""
-        return cls(
-            workflows_dir=Path('~/.localflow/workflows').expanduser(),
-            local_workflows_dir=Path('.localflow'),
-            log_dir=Path('~/.localflow/logs').expanduser(),
-            log_level='INFO',
-            docker_enabled=False,
-            docker_default_image='ubuntu:latest',
-            show_output=True,
-            default_shell='/bin/bash'
-        )
-
-    def ensure_directories(self) -> None:
-        """Ensure required directories exist."""
-        self.workflows_dir.mkdir(parents=True, exist_ok=True)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-
 class LocalFlowLogger:
     """Custom logger for LocalFlow with rich output support."""
     def __init__(self, config: Config, workflow_name: str):
@@ -194,477 +138,6 @@ class LocalFlowLogger:
             logger.addHandler(console_handler)
 
         return logger
-
-class DockerExecutor:
-    """Handle Docker-based execution of workflow steps."""
-    def __init__(self, config: Config):
-        self.config = config
-        self.client = docker.from_env() if config.docker_enabled else None
-
-    def run_in_container(self, command: str, env: Dict[str, str], working_dir: str) -> dict:
-        """Run a command in a Docker container with proper error handling."""
-        if not self.client:
-            return {'exit_code': 1, 'output': 'Docker is not enabled'}
-
-        try:
-            container = self.client.containers.run(
-                self.config.docker_default_image,
-                command=command,
-                environment=env,
-                working_dir=working_dir,
-                volumes={working_dir: {'bind': working_dir, 'mode': 'rw'}},
-                detach=True
-            )
-
-            output = container.wait()
-            logs = container.logs().decode()
-            container.remove()
-
-            return {
-                'exit_code': output['StatusCode'],
-                'output': logs
-            }
-        except Exception as e:
-            return {
-                'exit_code': 1,
-                'output': f"Docker execution failed: {str(e)}"
-            }
-
-
-class OutputHandler:
-    """Handles workflow output routing and file management."""
-    def __init__(self, config: OutputConfig):
-        if not isinstance(config.file, (Path, type(None))):
-            raise TypeError(f"`file` in OutputConfig must be a Path or None, got {type(config.file)}")
-        self.config = config
-        self._file_handle = None
-
-    def __enter__(self):
-        """Set up output handling and ensure file creation."""
-        if self.config and self.config.file and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            try:
-                # Ensure parent directories exist
-                self.config.file.parent.mkdir(parents=True, exist_ok=True)
-
-                # Open file with appropriate mode
-                mode = 'a' if self.config.append else 'w'
-                self._file_handle = open(self.config.file, mode)
-                logging.debug(f"Output file {self.config.file} created with mode '{mode}'.")
-            except Exception as e:
-                raise ValueError(f"Failed to initialize output file: {e}") from e
-        return self
-
-    def write(self, content: str):
-        """Write content to configured outputs."""
-        if self._file_handle and self.config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            self._file_handle.write(content)
-            self._file_handle.flush()
-            logging.debug(f"Written to file {self.config.file}: {content.strip()}")
-        if self.config.stdout and self.config.mode in (OutputMode.STDOUT, OutputMode.BOTH):
-            sys.stdout.write(content)
-            sys.stdout.flush()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up resources when exiting the context."""
-        if self._file_handle:
-            try:
-                self._file_handle.close()
-                logging.debug(f"Output file {self.config.file} closed.")
-            except Exception as e:
-                logging.error(f"Failed to close output file {self.config.file}: {e}")
-
-
-@dataclass
-class WorkflowExecutor:
-    """
-    Execute workflow files with enhanced output handling.
-
-    This class manages the execution of workflows, including:
-    - Loading and validating workflow definitions
-    - Managing job dependencies and conditions
-    - Handling execution environment and output
-    - Supporting both local and Docker-based execution
-    """
-    workflow_path: Path
-    config: Config
-    logger: Optional[logging.Logger] = None
-    docker_executor: Optional[DockerExecutor] = None
-    output_config: Optional[OutputConfig] = None
-    _output_handler: Optional[OutputHandler] = None
-
-    # Track completed jobs for condition evaluation
-    _completed_jobs: Dict[str, bool] = field(default_factory=dict)    # Store loaded workflow
-    _workflow: Optional[Workflow] = None
-
-    def _get_job_by_id_or_name(self, job_identifier: str) -> Job:
-        """
-        Find a job by either its ID or name.
-
-        This method first tries to find a job by ID, and if not found,
-        falls back to looking up by name. This maintains backward compatibility
-        while supporting the new ID-based referencing.
-
-        Args:
-            job_identifier: Either a job ID or job name
-
-        Returns:
-            Job: The found job instance
-
-        Raises:
-            ValueError: If no job matches the given identifier
-        """
-        # First try to find by ID
-        for job in self._workflow.jobs.values():
-            if job.id == job_identifier:
-                return job
-
-        # If not found by ID, try to find by name
-        if job_identifier in self._workflow.jobs:
-            return self._workflow.jobs[job_identifier]
-
-        # If we get here, the job wasn't found
-        available_jobs = [
-            f"{job.name} (ID: {job.id})"
-            for job in self._workflow.jobs.values()
-        ]
-        raise ValueError(
-            f"Job '{job_identifier}' not found. Available jobs: "
-            f"{', '.join(available_jobs)}"
-        )
-
-    def __post_init__(self):
-        """Initialize the executor after dataclass initialization."""
-        # Initialize logger
-        self.logger = LocalFlowLogger(
-            self.config,
-            self.workflow_path.stem
-        ).logger
-
-        # Setup Docker executor if enabled
-        if self.config.docker_enabled:
-            self.docker_executor = DockerExecutor(self.config)
-
-        # Load and validate workflow
-        self._load_workflow()
-
-        # Setup output configuration
-        self._setup_output_config()
-
-        # Initialize output handler if needed
-        if self.output_config and self.output_config.mode in (OutputMode.FILE, OutputMode.BOTH):
-            logging.debug(f"Initializing OutputHandler for file: {self.output_config.file}")
-            self._output_handler = OutputHandler(self.output_config)
-
-    def _load_workflow(self) -> None:
-        """
-        Load and validate the workflow from the specified path.
-        Raises ValueError if the workflow is invalid.
-        """
-        try:
-            # Load workflow using new schema
-            self._workflow = Workflow.from_file(self.workflow_path)
-
-            # Validate workflow
-            errors = self._workflow.validate()
-            if errors:
-                raise ValueError(
-                    "Workflow validation failed:\n" +
-                    "\n".join(f"- {error}" for error in errors)
-                )
-
-        except Exception as e:
-            raise ValueError(f"Failed to load workflow: {e}")
-
-    def _setup_output_config(self) -> None:
-        """
-        Configure output handling by merging workflow-level settings
-        with global configuration.
-        """
-        # Get workflow-level output config if it exists
-        workflow_output = OutputConfig.from_dict(
-            getattr(self._workflow, 'output', {})
-        )
-
-        # Use workflow config if present, otherwise use global config
-        self.output_config = workflow_output or self.config.output_config
-
-    def execute_step(self, step: dict, env: Dict[str, str] = None) -> bool:
-        """Execute a single workflow step with proper output handling."""
-        step_name = step.get('name', 'Unnamed step')
-        command = step.get('run')
-        working_dir = step.get('working_dir', str(self.workflow_path.parent))
-
-        if not command:
-            self.logger.error(f"Step '{step_name}' is missing required 'run' field")
-            return False
-
-        self.logger.info(f"Executing step: {step_name}")
-
-        output_handler = self._output_handler or OutputHandler(self.output_config)
-
-        try:
-            with output_handler:
-                # Execute command and handle output
-                if self.docker_executor and not step.get('local', False):
-                    result = self.docker_executor.run_in_container(
-                        command, env, working_dir
-                    )
-                else:
-                    # Execute locally
-                    process = subprocess.run(
-                        command,
-                        shell=True,
-                        cwd=working_dir,
-                        env=env or os.environ.copy(),
-                        text=True,
-                        capture_output=True
-                    )
-                    result = {
-                        'exit_code': process.returncode,
-                        'output': process.stdout + process.stderr
-                    }
-
-                # Handle command output
-                output_text = result.get('output', '')
-                if output_text:
-                    output_handler.write(output_text)
-                    if not output_text.endswith('\n'):
-                        output_handler.write('\n')
-                else:
-                    # Write empty line to maintain file existence
-                    output_handler.write('\n')
-
-                success = result['exit_code'] == 0
-                if not success:
-                    error_msg = (f"Step '{step_name}' failed with exit code "
-                               f"{result['exit_code']}\n")
-                    output_handler.write(error_msg)
-                    self.logger.error(error_msg.strip())
-
-                return success
-
-        except Exception as e:
-            error_msg = f"Failed to execute step '{step_name}': {e}\n"
-            self.logger.error(error_msg.strip())
-            with OutputHandler(self.output_config) as output:
-                output.write(error_msg)
-            return False
-
-        def _execute_job_steps(self, job: Job) -> bool:
-            """Execute all steps in a job"""
-            try:
-                self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
-
-                # Build execution environment
-                env = os.environ.copy()
-                env.update(self._workflow.env)
-                env.update(job.env)
-
-                # Execute each step
-                for step in job.steps:
-                    if not self.execute_step(step, env):
-                        return False
-
-                # Record successful completion using job ID
-                self._completed_jobs[job.id] = True
-                return True
-            except Exception as e:
-                self._completed_jobs[job.id] = False
-                raise
-
-    def _check_job_conditions(self, job: Job) -> bool:
-        """
-        Check if a job's conditions are met.
-
-        Args:
-            job: Job instance to check
-
-        Returns:
-            bool: True if conditions are met or no conditions exist
-        """
-        if not job.condition:
-            return True
-
-        # Build context of completed jobs using IDs
-        context = {
-            j.id: j.id in self._completed_jobs
-            for j in self._workflow.jobs.values()
-        }
-
-        try:
-            return job.condition.evaluate(context)
-        except Exception as e:
-            self.logger.error(
-                f"Failed to evaluate conditions for job '{job.name}': {e}"
-            )
-            return False
-
-    def execute_job(self, job_identifier: str) -> bool:
-        """Execute a job and its dependencies."""
-        if not self._workflow:
-            raise ValueError("No workflow loaded")
-
-        try:
-            job = self._get_job_by_id_or_name(job_identifier)
-            return self._execute_job_with_deps(job)
-        except Exception as e:
-            self.logger.error(f"Failed to execute job: {e}")
-            return False
-
-    def _execute_job_steps(self, job: Job) -> bool:
-        """
-        Execute all steps in a job sequentially.
-
-        This method:
-        1. Sets up the execution environment with workflow and job variables
-        2. Executes each step in order
-        3. Tracks job completion status
-
-        Args:
-            job: Job instance containing steps to execute
-
-        Returns:
-            bool: True if all steps executed successfully, False otherwise
-        """
-        try:
-            self.logger.info(f"Starting job: {job.name} (ID: {job.id})")
-
-            # Build execution environment by combining workflow and job variables
-            env = os.environ.copy()
-            env.update(self._workflow.env)  # Add workflow-level variables
-            env.update(job.env)            # Add job-level variables
-
-            # Execute each step in sequence
-            for step in job.steps:
-                if not self.execute_step(step, env):
-                    return False
-
-            # Record successful completion using job ID
-            self._completed_jobs[job.id] = True
-            return True
-
-        except Exception as e:
-            self._completed_jobs[job.id] = False
-            raise
-
-    def _execute_job_with_deps(self, job: Job, visited: Set[str] = None, execution_path: Set[str] = None) -> bool:
-        """
-        Execute a job ensuring all dependencies run first, with proper cycle detection
-        and dependency resolution.
-
-        This implementation uses two tracking sets:
-        - visited: Tracks all jobs we've seen to detect cycles
-        - execution_path: Tracks the current execution chain to allow parallel paths
-
-        Args:
-            job: Job to execute
-            visited: Set of all job IDs seen during traversal
-            execution_path: Set of job IDs in current execution chain
-
-        Returns:
-            bool: True if job and all dependencies executed successfully
-
-        Example dependency graph:
-            A -> B -> C
-            A -> D -> C
-
-        In this case, C should run only after both B and D complete, but B and D
-        can run in parallel after A. The execution_path helps track the current
-        chain (e.g. A->B->C vs A->D->C) while visited tracks all jobs seen.
-        """
-        if visited is None:
-            visited = set()
-        if execution_path is None:
-            execution_path = set()
-
-        # Check if we're in a cycle
-        if job.id in execution_path:
-            self.logger.error(
-                f"Circular dependency detected in path: "
-                f"{' -> '.join(execution_path)} -> {job.id}"
-            )
-            return False
-
-        # Add job to current execution path
-        execution_path.add(job.id)
-
-        try:
-            # First, process all dependencies if not already completed
-            for dep_id in job.needs:
-                # Skip if dependency already completed successfully
-                if dep_id in self._completed_jobs and self._completed_jobs[dep_id]:
-                    continue
-
-                # Find the dependency job
-                try:
-                    dep_job = next(j for j in self._workflow.jobs.values() if j.id == dep_id)
-                except StopIteration:
-                    self.logger.error(f"Dependency job '{dep_id}' not found")
-                    return False
-
-                # Execute dependency if not visited or not completed
-                if dep_id not in visited or not self._completed_jobs.get(dep_id, False):
-                    if not self._execute_job_with_deps(dep_job, visited, execution_path.copy()):
-                        return False
-
-            # Mark this job as visited
-            visited.add(job.id)
-
-            # Check if job already completed successfully
-            if job.id in self._completed_jobs and self._completed_jobs[job.id]:
-                return True
-
-            # Check conditions now that dependencies are handled
-            if job.condition:
-                try:
-                    context = {
-                        j.id: j.id in self._completed_jobs and self._completed_jobs[j.id]
-                        for j in self._workflow.jobs.values()
-                    }
-                    if not job.condition.evaluate(context):
-                        self.logger.info(
-                            f"Skipping job '{job.name}' (ID: {job.id}) - conditions not met"
-                        )
-                        # Mark as completed but not necessarily successful
-                        self._completed_jobs[job.id] = True
-                        return True
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to evaluate conditions for job '{job.name}': {e}"
-                    )
-                    return False
-
-            # Execute the job itself
-            success = self._execute_job_steps(job)
-            self._completed_jobs[job.id] = success
-            return success
-
-        finally:
-            # Always remove job from execution path when done
-            execution_path.remove(job.id)
-
-    def run(self) -> bool:
-        """Execute the entire workflow respecting job dependencies."""
-        if not self._workflow:
-            raise ValueError("No workflow loaded")
-
-        try:
-            # Enter output handler context for entire workflow execution
-            with self._output_handler or OutputHandler(self.output_config):
-                # Clear completed jobs at start of workflow
-                self._completed_jobs.clear()
-
-                # Execute all jobs in workflow
-                for job_name in self._workflow.jobs:
-                    if job_name not in self._completed_jobs:
-                        if not self.execute_job(job_name):
-                            return False
-
-                return True
-
-        except Exception as e:
-            self.logger.error(f"Workflow execution failed: {e}")
-            return False
 
 
 def resolve_workflow_path(workflows_dir: Path, workflow_id: str, local_dir: Optional[Path] = None) -> Path:
@@ -996,6 +469,303 @@ def config(config: Config):
         console.print(f"[red]Error displaying configuration: {e}[/red]")
         if config.log_level == "DEBUG":
             console.print_exception()
+
+@cli.group()
+def events():
+    """Manage event monitoring and triggers"""
+    pass
+
+@events.command('list')
+@click.pass_obj
+def list_events(config: Config):
+    """List configured event triggers"""
+    try:
+        # Initialize registry and discover workflows
+        registry = WorkflowRegistry()
+        registry.discover_workflows(
+            config.workflows_dir,
+            config.local_workflows_dir
+        )
+
+        # Create table for events
+        table = Table(
+            title="Configured Event Triggers",
+            show_header=True,
+            header_style="bold blue",
+            border_style="blue"
+        )
+
+        table.add_column("Workflow", justify="left")
+        table.add_column("Event Type", justify="left")
+        table.add_column("Paths", justify="left")
+        table.add_column("Patterns", justify="left")
+        table.add_column("Recursive", justify="center")
+        table.add_column("Conditions", justify="left")
+
+        # Collect events from all workflows
+        for workflow in registry.find_workflows():
+            for event in workflow.events:
+                conditions = []
+                if event.trigger.min_size:
+                    conditions.append(f"min_size: {event.trigger.min_size}")
+                if event.trigger.max_size:
+                    conditions.append(f"max_size: {event.trigger.max_size}")
+                if event.trigger.owner:
+                    conditions.append(f"owner: {event.trigger.owner}")
+                if event.trigger.group:
+                    conditions.append(f"group: {event.trigger.group}")
+
+                table.add_row(
+                    workflow.name,
+                    event.type,
+                    "\n".join(event.trigger.paths),
+                    "\n".join(event.trigger.patterns),
+                    "✓" if event.trigger.recursive else "✗",
+                    "\n".join(conditions) or "None"
+                )
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n[dim]To start monitoring, run: localflow events start[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error listing events: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+
+@events.command('status')
+@click.pass_obj
+def event_status(config: Config):
+    """Show event monitoring status"""
+    try:
+        if not config.monitor_pid_file.exists():
+            console.print("[yellow]Event monitor is not running[/yellow]")
+            return
+
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+
+        try:
+            process = psutil.Process(pid)
+            status = "Running" if process.is_running() else "Stopped"
+            cpu_percent = process.cpu_percent()
+            memory_info = process.memory_info()
+
+            # Create status table
+            table = Table(title="Event Monitor Status")
+            table.add_column("Attribute", style="bold blue")
+            table.add_column("Value")
+
+            table.add_row("Status", f"[green]{status}[/green]")
+            table.add_row("PID", str(pid))
+            table.add_row("CPU Usage", f"{cpu_percent}%")
+            table.add_row("Memory Usage", f"{memory_info.rss / 1024 / 1024:.2f} MB")
+            table.add_row("Start Time", time.strftime('%Y-%m-%d %H:%M:%S',
+                          time.localtime(process.create_time())))
+
+            console.print(table)
+
+            # Show active watches
+            registry = WorkflowRegistry()
+            registry.discover_workflows(
+                config.workflows_dir,
+                config.local_workflows_dir
+            )
+            monitor = EventMonitor(config, registry)
+            monitor.setup_watches()
+
+            watch_table = Table(title="Active Watches")
+            watch_table.add_column("Path", style="blue")
+            watch_table.add_column("Recursive")
+
+            for path, recursive_set in monitor.watch_paths.items():
+                watch_table.add_row(
+                    str(path),
+                    "✓" if any(recursive_set) else "✗"
+                )
+
+            console.print("\n")
+            console.print(watch_table)
+
+        except psutil.NoSuchProcess:
+            console.print("[yellow]Event monitor process not found[/yellow]")
+            if pid_file.exists():
+                pid_file.unlink()
+
+    except Exception as e:
+        console.print(f"[red]Error checking monitor status: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+
+@events.command('start')
+@click.pass_obj
+@click.option('--foreground', '-f', is_flag=True, help="Run in foreground (no daemon)")
+def start_monitor(config: Config, foreground: bool):
+    """Start event monitoring"""
+    try:
+        if foreground:
+            # Run directly (no daemon)
+            registry = WorkflowRegistry()
+            registry.discover_workflows(
+                config.workflows_dir,
+                config.local_workflows_dir
+            )
+            
+            monitor = EventMonitor(config, registry)
+            
+            console.print("[green]Starting event monitor in foreground...[/green]")
+            try:
+                monitor.start()
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Stopping event monitor...[/yellow]")
+                monitor.stop()
+        else:
+            # Import and run daemon
+            from daemon import DaemonContext
+            from daemon.pidfile import PIDLockFile
+            
+            if config.monitor_pid_file.exists():
+                console.print("[yellow]Event monitor is already running[/yellow]")
+                return
+                
+            service = LocalFlowMonitorService(
+                config_path=str(config.config_file) if config.config_file else None
+            )
+
+            # Ensure pid file directory exists
+            config.monitor_pid_file.parent.mkdir(parents=True, exist_ok=True)
+
+            context = DaemonContext(
+                pidfile=PIDLockFile(str(config.monitor_pid_file)),
+                working_directory='/',
+                umask=0o002,
+                detach_process=True
+            )
+            
+            try:
+                with context:
+                    service.run()
+                    
+                # Wait a bit to check if daemon started successfully
+                time.sleep(1)
+                if config.monitor_pid_file.exists():
+                    console.print("[green]Event monitor daemon started[/green]")
+                else:
+                    console.print("[red]Failed to start event monitor daemon[/red]")
+            except Exception as e:
+                console.print(f"[red]Failed to start monitor: {e}[/red]")
+                if config.monitor_pid_file.exists():
+                    config.monitor_pid_file.unlink()
+
+    except Exception as e:
+        console.print(f"[red]Error starting monitor: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+
+@events.command('stop')
+def stop_monitor():
+    """Stop event monitoring daemon"""
+    try:
+        if not config.monitor_pid_file.exists():
+            console.print("[yellow]Event monitor is not running[/yellow]")
+            return
+            
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, signal.SIGTERM)
+            
+            # Wait for process to stop
+            time.sleep(1)
+            if not pid_file.exists():
+                console.print("[green]Event monitor stopped[/green]")
+            else:
+                console.print("[yellow]Event monitor did not stop gracefully[/yellow]")
+                pid_file.unlink()
+        except (ProcessLookupError, FileNotFoundError):
+            console.print("[yellow]Event monitor process not found[/yellow]")
+            if pid_file.exists():
+                pid_file.unlink()
+        except Exception as e:
+            console.print(f"[red]Error stopping monitor: {e}[/red]")
+
+    except Exception as e:
+        console.print(f"[red]Error stopping monitor: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+
+@events.command('logs')
+@click.pass_obj
+@click.option('--follow', '-f', is_flag=True, help="Follow log output")
+@click.option('--lines', '-n', default=100, help="Number of lines to show")
+def show_logs(config: Config, follow: bool, lines: int):
+    """Show event monitor logs"""
+    try:
+        log_file = config.log_dir / config.monitor_log_file
+
+        if not log_file.exists():
+            console.print("[yellow]No log file found[/yellow]")
+            return
+
+        def display_logs():
+            with open(log_file) as f:
+                if follow:
+                    # Start from end for follow mode
+                    f.seek(0, 2)
+                else:
+                    # Show last N lines
+                    for line in tail(f, lines):
+                        console.print(line.strip())
+                    return
+
+                while follow:
+                    line = f.readline()
+                    if line:
+                        console.print(line.strip())
+                    else:
+                        time.sleep(0.1)
+
+        if follow:
+            try:
+                display_logs()
+            except KeyboardInterrupt:
+                pass
+        else:
+            display_logs()
+
+    except Exception as e:
+        console.print(f"[red]Error showing logs: {e}[/red]")
+        if config.log_level == "DEBUG":
+            console.print_exception()
+
+def tail(f, lines=1):
+    """Read last N lines from file"""
+    total_lines_wanted = lines
+
+    BLOCK_SIZE = 1024
+    f.seek(0, 2)
+    block_end_byte = f.tell()
+    lines_to_go = total_lines_wanted
+    block_number = -1
+    blocks = []
+
+    while lines_to_go > 0 and block_end_byte > 0:
+        if block_end_byte - BLOCK_SIZE > 0:
+            f.seek(block_number * BLOCK_SIZE, 2)
+            blocks.append(f.read(BLOCK_SIZE))
+        else:
+            f.seek(0, 0)
+            blocks.append(f.read(block_end_byte))
+
+        lines_found = blocks[-1].count(b'\n')
+        lines_to_go -= lines_found
+        block_end_byte -= BLOCK_SIZE
+        block_number -= 1
+
+    all_read = b''.join(reversed(blocks))
+    return all_read.splitlines()[-total_lines_wanted:]
 
 if __name__ == '__main__':
     cli()

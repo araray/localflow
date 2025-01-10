@@ -10,6 +10,7 @@ __pycache__/
 src
 old-docs/
 .localflow/
+config.yml
 
 # Distribution / packaging
 .Python

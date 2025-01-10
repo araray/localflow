@@ -4,11 +4,11 @@ Handles ID generation, validation, and condition evaluation.
 """
 
 import hashlib
-
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Pattern, Set, Union
 
 import yaml
 
@@ -27,6 +27,93 @@ def generate_id(prefix: str, content: str) -> str:
     hash_obj = hashlib.sha256(content.encode())
     return f"{prefix}_{hash_obj.hexdigest()[:8]}"
 
+@dataclass
+class EventTrigger:
+    """Represents a file system event trigger configuration."""
+    paths: List[str]  # Directories to watch
+    patterns: List[str] = field(default_factory=list)  # File patterns (glob/regex)
+    recursive: bool = False  # Whether to watch subdirectories
+    max_depth: Optional[int] = None  # Maximum directory depth to watch
+    include_patterns: List[str] = field(default_factory=list)  # Files to include
+    exclude_patterns: List[str] = field(default_factory=list)  # Files to exclude
+    owner: Optional[str] = None  # File owner to match
+    group: Optional[str] = None  # File group to match
+    min_size: Optional[int] = None  # Minimum file size in bytes
+    max_size: Optional[int] = None  # Maximum file size in bytes
+    _compiled_patterns: List[Pattern] = field(default_factory=list, init=False)
+
+    def __post_init__(self):
+        """Compile regex patterns after initialization."""
+        self._compiled_patterns = []
+        for pattern in self.patterns:
+            try:
+                self._compiled_patterns.append(re.compile(pattern))
+            except re.error:
+                # If it's not a valid regex, treat it as a glob pattern
+                glob_pattern = pattern.replace('*', '.*').replace('?', '.')
+                self._compiled_patterns.append(re.compile(glob_pattern))
+
+    def matches(self, event_info: dict) -> bool:
+        """
+        Check if an event matches this trigger's criteria.
+
+        Args:
+            event_info: Dictionary containing event details (path, size, owner, etc.)
+
+        Returns:
+            bool: True if event matches all criteria, False otherwise
+        """
+        path = Path(event_info['path'])
+
+        # Check patterns
+        if self.patterns:
+            filename = path.name
+            if not any(p.match(filename) for p in self._compiled_patterns):
+                return False
+
+        # Check include/exclude patterns
+        if self.include_patterns:
+            if not any(path.match(pattern) for pattern in self.include_patterns):
+                return False
+        if self.exclude_patterns:
+            if any(path.match(pattern) for pattern in self.exclude_patterns):
+                return False
+
+        # Check owner
+        if self.owner and event_info.get('owner') != self.owner:
+            return False
+
+        # Check group
+        if self.group and event_info.get('group') != self.group:
+            return False
+
+        # Check size
+        size = event_info.get('size', 0)
+        if self.min_size is not None and size < self.min_size:
+            return False
+        if self.max_size is not None and size > self.max_size:
+            return False
+
+        return True
+
+@dataclass
+class Event:
+    """Represents an event that can trigger workflow execution."""
+    type: str  # Event type (e.g., 'file_change', 'file_create', etc.)
+    trigger: EventTrigger
+    workflow_id: str  # ID of workflow to trigger
+    job_ids: Optional[List[str]] = None  # Optional specific jobs to run
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Event':
+        """Create Event instance from dictionary data."""
+        trigger_data = data.get('trigger', {})
+        return cls(
+            type=data['type'],
+            trigger=EventTrigger(**trigger_data),
+            workflow_id=data['workflow_id'],
+            job_ids=data.get('job_ids')
+        )
 
 @dataclass
 class Condition:
@@ -145,6 +232,7 @@ class Workflow:
     source: Path = field(default_factory=Path)
     created_at: datetime = field(default_factory=datetime.now)
     modified_at: datetime = field(default_factory=datetime.now)
+    events: List[Event] = field(default_factory=list)
 
     @classmethod
     def from_file(cls, path: Path) -> 'Workflow':
@@ -159,6 +247,11 @@ class Workflow:
             if not workflow_id:
                 raise ValueError(f"Workflow in {path} is missing required ID")
 
+            # Parse events if present
+            events = []
+            for event_data in data.get('events', []):
+                events.append(Event.from_dict(event_data))
+
             workflow = cls(
                 name=data.get('name', path.stem),
                 id=workflow_id,
@@ -167,6 +260,7 @@ class Workflow:
                 author=data.get('author'),
                 tags=set(data.get('tags', [])),
                 env=data.get('env', {}),
+                events=events,
                 source=path,
                 created_at=datetime.fromtimestamp(path.stat().st_ctime),
                 modified_at=datetime.fromtimestamp(path.stat().st_mtime)

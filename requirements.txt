@@ -4,3 +4,6 @@ rich
 pyyaml
 pytest
 pytest-cov
+watchdog
+python-daemon
+psutil
